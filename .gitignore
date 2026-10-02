@@ -1,0 +1,51 @@
+# ---------- secrets (MOST IMPORTANT) ----------
+.env
+.env.local
+*.env
+.env.*
+!.env.example
+
+# ---------- Python / backend ----------
+# virtual environments (any location / any common name)
+backend/venv/
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---------- database ----------
+*.db
+*.sqlite
+*.sqlite3
+# SQLite WAL / shared-memory sidecars (appear while the server is running)
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ---------- uploaded images ----------
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# ---------- Node / frontend ----------
+node_modules/
+frontend/dist/
+.vite/
+
+# ---------- editor / OS ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---------- root-level user data (never commit) ----------
+Screenshot*.png
+WhatsApp Image*.jpeg
+
+# ---------- AI tooling artifacts ----------
+.agents/
+.kombai/
+skills-lock.json

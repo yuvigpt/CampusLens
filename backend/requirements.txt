@@ -1,0 +1,22 @@
+# ============================================================
+# CampusLens - backend dependencies
+#
+# Install into the project venv with:
+#   backend\venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+# (or activate first:  backend\venv\Scripts\Activate.ps1  then  pip install -r requirements.txt)
+#
+# Versions below are the exact ones verified working on Python 3.14.0 (Windows).
+# ============================================================
+
+# --- Web framework + ASGI server ---
+fastapi==0.142.2
+uvicorn==0.54.0
+
+# --- multipart/form-data parsing (REQUIRED by FastAPI for image uploads) ---
+python-multipart==0.0.32
+
+# --- Gemini AI SDK, multimodal (image + text) ---
+google-genai==2.27.0
+
+# --- loads backend/.env into os.environ ---
+python-dotenv==1.2.4
