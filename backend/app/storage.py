@@ -18,8 +18,9 @@ Security rules this module obeys
   (``POST /storage/v1/object/{bucket}/{path}`` and
   ``POST /storage/v1/object/sign/{bucket}/{path}``); no public-bucket,
   policy or ACL API is ever called.
-* The service-role key travels exclusively in the ``Authorization`` header
-  of requests addressed to the configured project URL. It never appears in
+* The service-role key travels exclusively in the ``Authorization`` and
+  ``apikey`` headers of requests addressed to the configured project URL.
+  It never appears in
   a URL, a log line, or an exception message: every failure goes through
   :func:`_redact` and reports only a status code or error class.
 * Uses plain ``httpx`` (already present via Starlette's TestClient) rather
@@ -100,6 +101,10 @@ def upload(
     url = f"{base}/storage/v1/object/{bucket}/{path}"
     headers = {
         "Authorization": f"Bearer {key}",
+        # Supabase authenticates project credentials through the ``apikey``
+        # header; sending it alongside Authorization is what makes this work
+        # for both a legacy service_role JWT and a newer sb_secret_ key.
+        "apikey": key,
         "Content-Type": content_type,
         "x-upsert": "false",  # a uuid object name must never overwrite
     }
@@ -136,11 +141,11 @@ def signed_url(
     base, key, bucket = _require(settings)
     path = _validate_object_path(object_path)
     url = f"{base}/storage/v1/object/sign/{bucket}/{path}"
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = {"Authorization": f"Bearer {key}", "apikey": key}
     try:
         response = httpx.post(
             url,
-            json={"expires_in": int(expires_in)},
+            json={"expiresIn": int(expires_in)},
             headers=headers,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )

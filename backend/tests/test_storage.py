@@ -158,7 +158,30 @@ class UploadTest(_EnvIsolatedTestCase):
         )
         headers = post.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], f"Bearer {FAKE_KEY}")
+        self.assertEqual(headers["apikey"], FAKE_KEY)
         self.assertEqual(headers["Content-Type"], "image/png")
+
+    def test_upload_sends_both_auth_headers_and_never_the_key_in_the_url(self):
+        """Regression: Supabase authenticates via the apikey header too.
+
+        Sending only Authorization made the Storage API reject the upload with
+        HTTP 400 ("Image storage unavailable" surfaced to the student).
+        """
+        fake = _FakeResponse(200, {"Key": f"{BUCKET}/uploads/{GENERATED_NAME}"})
+        with mock.patch.object(storage.httpx, "post", return_value=fake) as post:
+            storage.upload(
+                self.settings,
+                b"BYTES",
+                content_type="image/png",
+                object_path=f"uploads/{GENERATED_NAME}",
+            )
+
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], f"Bearer {FAKE_KEY}")
+        self.assertEqual(headers["apikey"], FAKE_KEY)
+        called_url = post.call_args.args[0]
+        self.assertNotIn(FAKE_KEY, called_url)   # never in the URL
+        self.assertNotIn(headers["apikey"], called_url)
 
     def test_upload_without_url_or_key_never_makes_a_request(self):
         for overrides in (
@@ -260,10 +283,41 @@ class SignedUrlTest(_EnvIsolatedTestCase):
             post.call_args.args[0],
             f"{PROJECT}/storage/v1/object/sign/{BUCKET}/{self.object_path}",
         )
-        self.assertEqual(post.call_args.kwargs["json"], {"expires_in": 300})
+        self.assertEqual(post.call_args.kwargs["json"], {"expiresIn": 300})
         self.assertEqual(storage.SIGN_URL_TTL_SECONDS, 300)
         headers = post.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], f"Bearer {FAKE_KEY}")
+        self.assertEqual(headers["apikey"], FAKE_KEY)
+
+    def test_sign_body_uses_the_camel_case_expires_in_field(self):
+        """Regression: the Storage API rejects ``expires_in`` with HTTP 400.
+
+        ``POST /storage/v1/object/sign/...`` requires the body property
+        ``expiresIn``; the snake_case spelling fails body validation and the
+        signed URL request failed with 400.
+        """
+        signed_path = f"/object/sign/{BUCKET}/{self.object_path}?token=abc.def"
+        fake = _FakeResponse(200, {"signedURL": signed_path})
+        with mock.patch.object(storage.httpx, "post", return_value=fake) as post:
+            storage.signed_url(self.settings, self.object_path)
+
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body, {"expiresIn": 300})
+        self.assertNotIn("expires_in", body)          # wrong spelling is gone
+        self.assertEqual(list(body), ["expiresIn"])    # no extra properties
+
+    def test_sign_honours_a_custom_ttl_and_both_auth_headers(self):
+        signed_path = f"/object/sign/{BUCKET}/{self.object_path}?token=abc.def"
+        fake = _FakeResponse(200, {"signedURL": signed_path})
+        with mock.patch.object(storage.httpx, "post", return_value=fake) as post:
+            storage.signed_url(self.settings, self.object_path, expires_in=60)
+
+        self.assertEqual(post.call_args.kwargs["json"], {"expiresIn": 60})
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], f"Bearer {FAKE_KEY}")
+        self.assertEqual(headers["apikey"], FAKE_KEY)
+        called_url = post.call_args.args[0]
+        self.assertNotIn(FAKE_KEY, called_url)        # key stays out of the URL
 
     def test_sign_without_configuration_never_makes_a_request(self):
         with mock.patch.object(storage.httpx, "post") as post:
