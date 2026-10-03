@@ -18,6 +18,7 @@ Run from anywhere with the project venv:
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import config, database, gemini, priority  # noqa: E402
+from app import config, database, gemini, priority, storage  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 # A deliberately fake secret, so a leak in a response body is easy to spot.
@@ -66,6 +67,14 @@ class ApiTestCase(unittest.TestCase):
         self.db_path = self.tmp_dir / "test.db"
         self.upload_dir = self.tmp_dir / "uploads"
 
+        # A developer's shell must not change what these tests see: strip
+        # any SUPABASE_* variables (patch.dict restores them afterwards).
+        self._env_patcher = mock.patch.dict(os.environ)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_BUCKET"):
+            os.environ.pop(name, None)
+
         # SAFETY NET: any test that reaches the real Gemini call fails loudly
         # here instead of quietly spending API quota.
         self._network_guard = mock.patch.object(
@@ -75,6 +84,16 @@ class ApiTestCase(unittest.TestCase):
         )
         self._network_guard.start()
         self.addCleanup(self._network_guard.stop)
+
+        # Second SAFETY NET: no test may ever reach Supabase over HTTP.
+        # Storage behaviour is always mocked one level above httpx.post.
+        self._storage_guard = mock.patch.object(
+            storage.httpx,
+            "post",
+            side_effect=AssertionError("a test tried to make a real Supabase call"),
+        )
+        self._storage_guard.start()
+        self.addCleanup(self._storage_guard.stop)
 
         self.start_client()
 
@@ -560,6 +579,199 @@ class SecurityTest(ApiTestCase):
         self.assertNotIn(boom, response.text)
         self.assertNotIn("Traceback", response.text)
         self.assertNotIn("campuslens.db", response.text)
+
+
+# ---------------------------------------------------------------------------
+# Supabase Storage: configured deployments vs. untouched local fallback
+# ---------------------------------------------------------------------------
+
+FAKE_SUPABASE_KEY = "service-role-FAKE-key-do-not-use-98765"
+SUPABASE_PROJECT = "https://example.supabase.co"
+SUPABASE_OVERRIDES = {
+    "supabase_url": SUPABASE_PROJECT,
+    "supabase_service_role_key": FAKE_SUPABASE_KEY,
+    "supabase_bucket": "imagestorage",
+}
+
+
+class SupabaseUploadFlowTest(ApiTestCase):
+    """POST /api/complaints with and without Supabase Storage configured.
+
+    setUp() stripped SUPABASE_* from the environment, so "unconfigured"
+    here can never be masked by a developer's shell.
+    """
+
+    def test_env_absent_keeps_exact_local_behavior(self):
+        self.assertFalse(self.app.state.settings.supabase_enabled)
+        self.stub_analysis(analysis=KNOWN_ANALYSIS)
+        response = self.submit()
+
+        self.assertEqual(response.status_code, 201)
+        on_disk = list(self.upload_dir.iterdir())
+        self.assertEqual(len(on_disk), 1)  # local file kept, as always
+        stored = database.list_complaints(db_path=self.db_path)
+        self.assertEqual(stored[0]["image_path"], f"uploads/{on_disk[0].name}")
+
+    def test_configured_upload_moves_bytes_to_bucket_and_removes_local_file(self):
+        self.stub_analysis(analysis=KNOWN_ANALYSIS)
+        self.start_client(**SUPABASE_OVERRIDES)
+        captured = {}
+
+        def fake_upload(settings, data, *, content_type, object_path):
+            captured.update(
+                settings=settings,
+                data=data,
+                content_type=content_type,
+                object_path=object_path,
+            )
+            return object_path
+
+        with mock.patch.object(storage, "upload", side_effect=fake_upload) as up:
+            response = self.submit()
+
+        self.assertEqual(response.status_code, 201)
+        up.assert_called_once()
+        payload = response.json()
+
+        # The same object key flows to the bucket, the API and the database.
+        object_path = captured["object_path"]
+        self.assertRegex(object_path, r"^uploads/[0-9a-f]{32}\.png$")
+        self.assertEqual(captured["data"], FAKE_IMAGE_BYTES)
+        self.assertEqual(captured["content_type"], "image/png")
+        self.assertIs(captured["settings"], self.app.state.settings)
+        self.assertEqual(captured["settings"].supabase_bucket, "imagestorage")
+        self.assertEqual(payload["image_path"], object_path)
+        self.assertEqual(payload["image_url"], f"/{object_path}")
+        stored = database.list_complaints(db_path=self.db_path)
+        self.assertEqual(stored[0]["image_path"], object_path)
+
+        # The temporary local copy is gone - only the bucket keeps the bytes.
+        self.assertEqual(list(self.upload_dir.iterdir()), [])
+
+    def test_configured_upload_failure_is_generic_502_and_keeps_everything(self):
+        self.stub_analysis(analysis=KNOWN_ANALYSIS)
+        self.start_client(**SUPABASE_OVERRIDES)
+        boom = storage.StorageError(f"upload rejected {FAKE_SUPABASE_KEY}")
+        with mock.patch.object(storage, "upload", side_effect=boom):
+            response = self.submit()
+
+        # Decision: fail the submission, reveal nothing.
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "Image storage unavailable.")
+        self.assertNotIn(FAKE_SUPABASE_KEY, response.text)
+
+        # No complaint row pointing at local-only storage...
+        self.assertEqual(database.list_complaints(db_path=self.db_path), [])
+        # ...and the temporary local image file is kept.
+        self.assertEqual(len(list(self.upload_dir.iterdir())), 1)
+
+    def test_storage_failure_even_when_gemini_fails_is_still_502(self):
+        # Storage runs regardless of analysis outcome; a storage outage must
+        # never produce a row that points at local-only storage.
+        self.stub_analysis(
+            ok=False, analysis=None, error="down", error_kind="network"
+        )
+        self.start_client(**SUPABASE_OVERRIDES)
+        boom = storage.StorageError("upload rejected")
+        with mock.patch.object(storage, "upload", side_effect=boom):
+            response = self.submit()
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(database.list_complaints(db_path=self.db_path), [])
+
+    def test_gemini_failure_with_storage_configured_still_saves(self):
+        self.stub_analysis(
+            ok=False, analysis=None, error="down", error_kind="network"
+        )
+        self.start_client(**SUPABASE_OVERRIDES)
+
+        def fake_upload(settings, data, *, content_type, object_path):
+            return object_path
+
+        with mock.patch.object(storage, "upload", side_effect=fake_upload) as up:
+            response = self.submit()
+
+        self.assertEqual(response.status_code, 201)
+        up.assert_called_once()
+        self.assertEqual(len(list(self.upload_dir.iterdir())), 0)
+
+
+class SupabaseServeTest(ApiTestCase):
+    """GET /uploads/{filename} in a configured deployment (private bucket)."""
+
+    NAME = "0123456789abcdef0123456789abcdef.png"
+    SIGNED = (
+        f"{SUPABASE_PROJECT}/storage/v1/object/sign/imagestorage"
+        f"/uploads/{NAME}?token=fake.jwt.token"
+    )
+
+    def test_missing_local_file_redirects_to_signed_url(self):
+        self.start_client(**SUPABASE_OVERRIDES)
+        with mock.patch.object(storage, "signed_url", return_value=self.SIGNED) as sign:
+            response = self.client.get(
+                f"/uploads/{self.NAME}", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], self.SIGNED)
+        sign.assert_called_once_with(
+            self.app.state.settings, f"uploads/{self.NAME}"
+        )
+
+    def test_signing_failure_is_generic_502(self):
+        self.start_client(**SUPABASE_OVERRIDES)
+        boom = storage.StorageError(f"cannot sign {FAKE_SUPABASE_KEY}")
+        with mock.patch.object(storage, "signed_url", side_effect=boom):
+            response = self.client.get(
+                f"/uploads/{self.NAME}", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "Image storage unavailable.")
+        self.assertNotIn(FAKE_SUPABASE_KEY, response.text)
+        self.assertNotIn(SUPABASE_PROJECT, response.text)
+
+    def test_legacy_local_file_is_still_served_directly_when_configured(self):
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        (self.upload_dir / self.NAME).write_bytes(b"legacy bytes")
+        self.start_client(**SUPABASE_OVERRIDES)
+        with mock.patch.object(storage, "signed_url") as sign:
+            response = self.client.get(
+                f"/uploads/{self.NAME}", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"legacy bytes")
+        sign.assert_not_called()  # disk wins; no bucket round-trip
+
+    def test_traversal_and_bad_names_never_reach_storage(self):
+        self.start_client(**SUPABASE_OVERRIDES)
+        with mock.patch.object(storage, "signed_url") as sign:
+            for path in (
+                "/uploads/../../app/config.py",
+                "/uploads/../config.py",
+                "/uploads/..%2F..%2Fapp%2Fconfig.py",
+                "/uploads/%2e%2e%2fconfig.py",
+                "/uploads/....//config.py",
+                "/uploads/notes.txt",
+            ):
+                with self.subTest(path=path):
+                    response = self.client.get(path, follow_redirects=False)
+                    self.assertEqual(response.status_code, 404)
+        sign.assert_not_called()
+
+    def test_unconfigured_missing_file_is_plain_404_without_signing(self):
+        # setUp() stripped SUPABASE_*: the storage branch must not even run.
+        with mock.patch.object(storage, "signed_url") as sign:
+            response = self.client.get(
+                f"/uploads/{self.NAME}", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 404)
+        sign.assert_not_called()
+
+    def test_unconfigured_traversal_still_404(self):
+        with mock.patch.object(storage, "signed_url") as sign:
+            response = self.client.get(
+                "/uploads/..%2F..%2Fapp%2Fconfig.py", follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 404)
+        sign.assert_not_called()
 
 
 

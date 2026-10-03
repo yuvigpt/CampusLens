@@ -15,7 +15,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi import Path as PathParam
 
-from .. import config, database, gemini, priority, schemas
+from .. import config, database, gemini, priority, schemas, storage
 
 router = APIRouter(prefix="/api/complaints", tags=["complaints"])
 
@@ -176,7 +176,35 @@ async def submit_complaint(
             f"was saved without analysis or a priority score. {result.error}"
         )
 
-    # ---------------- 4. Persist exactly once ----------------
+    # ------- 4. Supabase upload (only when storage is configured) ----------
+    # With SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY set, the bytes move from
+    # the temporary local file to the PRIVATE bucket and the local copy is
+    # deleted - the database keeps pointing at "uploads/<name>" either way,
+    # so there is no schema change and legacy rows keep working unchanged.
+    #
+    # Decision: if Supabase is configured but the upload fails, the whole
+    # submission fails with a generic 502 and NOTHING is written: the local
+    # file is kept (for inspection/retry) and no complaint row is created,
+    # because such a row would point at storage that does not exist.
+    if settings.supabase_enabled:
+        try:
+            object_path = storage.upload(
+                settings,
+                absolute_image.read_bytes(),
+                content_type=_EXTENSION_MIME[absolute_image.suffix.lower()],
+                object_path=image_path,
+            )
+        except storage.StorageError:
+            raise HTTPException(
+                status_code=502, detail="Image storage unavailable."
+            ) from None
+        image_path = object_path
+        try:
+            absolute_image.unlink()
+        except OSError:
+            pass  # a leftover temp file is harmless; the DB points at the object
+
+    # ---------------- 5. Persist exactly once ----------------
     complaint = database.create_complaint(
         description=description,
         location=location,

@@ -17,11 +17,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from . import config, database, schemas
+from . import config, database, schemas, storage
 from .routers import analytics, complaints
 
 # Generated upload names are 32 hex characters plus one known extension. This
@@ -49,7 +49,8 @@ def create_app(settings: Optional[config.Settings] = None) -> FastAPI:
     )
     app.state.settings = settings
 
-    # CORS is limited to the local Vite dev server. No wildcard, and no
+    # Origins come from CORS_ORIGINS (comma-separated), defaulting to the
+    # local Vite dev server when it is unset or empty. No wildcard, and no
     # credentials, so a stray browser page cannot drive this API.
     app.add_middleware(
         CORSMiddleware,
@@ -72,13 +73,20 @@ def create_app(settings: Optional[config.Settings] = None) -> FastAPI:
         )
 
     @app.get("/uploads/{filename}", include_in_schema=False)
-    def uploaded_image(filename: str, request: Request) -> FileResponse:
+    def uploaded_image(filename: str, request: Request) -> Response:
         """Serve a stored complaint image.
 
         The name must look like a generated upload, carry an allowed image
         extension, and resolve to a file sitting directly inside the uploads
         folder. Everything else returns a plain 404, so probing cannot tell the
         difference between "not allowed" and "not there".
+
+        A file on disk (local development, or rows created before Supabase
+        Storage) is served directly with a FileResponse. When Supabase
+        Storage is configured and no local file exists, the object lives in
+        the private bucket: a short-lived signed URL (5 minutes) is created
+        on demand and the browser is redirected to it. If signing fails, a
+        generic 502 is returned that reveals nothing about the backend.
         """
         current: config.Settings = request.app.state.settings
 
@@ -93,10 +101,27 @@ def create_app(settings: Optional[config.Settings] = None) -> FastAPI:
         # 3. Resolve and confirm the file is directly inside the uploads folder.
         upload_dir = current.upload_dir.resolve()
         candidate = (upload_dir / filename).resolve()
-        if candidate.parent != upload_dir or not candidate.is_file():
+        if candidate.parent != upload_dir:
             raise HTTPException(status_code=404, detail="Not found.")
 
-        return FileResponse(candidate)
+        # 4a. On disk: local development and legacy rows behave exactly as
+        # they always have.
+        if candidate.is_file():
+            return FileResponse(candidate)
+
+        # 4b. Private Supabase bucket: sign the object for this request only
+        # and redirect (the bucket itself never accepts direct public reads).
+        if current.supabase_enabled:
+            try:
+                signed = storage.signed_url(current, f"uploads/{filename}")
+            except storage.StorageError:
+                raise HTTPException(
+                    status_code=502, detail="Image storage unavailable."
+                ) from None
+            return RedirectResponse(signed, status_code=302)
+
+        # 5. Nothing stored under that name.
+        raise HTTPException(status_code=404, detail="Not found.")
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:

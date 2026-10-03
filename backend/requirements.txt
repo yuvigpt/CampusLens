@@ -20,3 +20,9 @@ google-genai==2.27.0
 
 # --- loads backend/.env into os.environ ---
 python-dotenv==1.2.4
+
+# --- Supabase Storage REST calls (upload + signed URLs).
+# Already present transitively via Starlette/httpx; pinned explicitly now
+# that application code (app/storage.py) imports it directly. Verified on
+# Python 3.14.0. ---
+httpx==0.28.1
