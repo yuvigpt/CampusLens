@@ -212,6 +212,7 @@ async def submit_complaint(
         priority_score=priority_score,
         score_breakdown=breakdown,
         db_path=settings.db_path,
+        database_url=settings.database_url,
         **ai_fields,
     )
 
@@ -241,6 +242,7 @@ def list_complaints(
             limit=limit,
             offset=offset,
             db_path=settings.db_path,
+            database_url=settings.database_url,
         )
     except ValueError as exc:
         # database.list_complaints already validates status / category / sort and
@@ -260,7 +262,9 @@ def get_complaint(
     complaint_id: int = PathParam(..., ge=1, description="The complaint id."),
 ) -> schemas.ComplaintOut:
     settings = _settings(request)
-    complaint = database.get_complaint(complaint_id, db_path=settings.db_path)
+    complaint = database.get_complaint(
+        complaint_id, db_path=settings.db_path, database_url=settings.database_url
+    )
     if complaint is None:
         raise HTTPException(status_code=404, detail=f"Complaint {complaint_id} not found.")
     return schemas.complaint_out(complaint)
@@ -279,7 +283,8 @@ def update_status(
     """Move a complaint between the three allowed statuses."""
     settings = _settings(request)
     updated = database.update_complaint_status(
-        complaint_id, body.status, db_path=settings.db_path
+        complaint_id, body.status, db_path=settings.db_path,
+        database_url=settings.database_url,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Complaint {complaint_id} not found.")

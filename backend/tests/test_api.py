@@ -72,7 +72,14 @@ class ApiTestCase(unittest.TestCase):
         self._env_patcher = mock.patch.dict(os.environ)
         self._env_patcher.start()
         self.addCleanup(self._env_patcher.stop)
-        for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_BUCKET"):
+        # DATABASE_URL is stripped so tests can never be routed to a real
+        # PostgreSQL server, even if the developer's shell exports it.
+        for name in (
+            "DATABASE_URL",
+            "SUPABASE_URL",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "SUPABASE_BUCKET",
+        ):
             os.environ.pop(name, None)
 
         # SAFETY NET: any test that reaches the real Gemini call fails loudly

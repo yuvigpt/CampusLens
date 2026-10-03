@@ -45,6 +45,13 @@ class Settings:
     service_name: str = SERVICE_NAME
     service_version: str = SERVICE_VERSION
 
+    # PostgreSQL via DATABASE_URL (deployment). Populated only from the process
+    # environment by database_url_from_env(): when it is missing or blank the
+    # app keeps using SQLite exactly as before (the local default). repr=False
+    # so the URL - which embeds credentials - can never appear in logs,
+    # tracebacks or test output.
+    database_url: str | None = field(default=None, repr=False)
+
     # Supabase Storage (private bucket). Populated only from the process
     # environment by supabase_settings_from_env(): when either the URL or
     # the key is missing the whole feature stays off and local behavior is
@@ -108,13 +115,32 @@ def supabase_settings_from_env() -> tuple[str | None, str | None, str]:
     return url, key, bucket
 
 
+def database_url_from_env() -> str | None:
+    """PostgreSQL connection URL from the ``DATABASE_URL`` environment variable.
+
+    Read from the process environment only (deployment platforms inject it
+    there); ``.env`` files are deliberately not consulted. Unset or blank
+    values collapse to ``None`` -> SQLite, the local default, so behaviour is
+    byte-identical whenever the variable is absent. The legacy
+    ``postgres://`` spelling is normalized to ``postgresql://``. The value is
+    never logged or included in any error message.
+    """
+    raw = (os.environ.get("DATABASE_URL") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("postgres://"):
+        return "postgresql://" + raw[len("postgres://") :]
+    return raw
+
+
 def default_settings() -> Settings:
     """The real settings used when the app is started normally.
 
-    ``cors_origins`` honours ``CORS_ORIGINS`` and the Supabase fields honour
-    ``SUPABASE_URL`` / ``SUPABASE_SERVICE_ROLE_KEY`` / ``SUPABASE_BUCKET``;
-    unset or empty values fall back to the safe local defaults (localhost
-    origins, Supabase Storage disabled).
+    ``cors_origins`` honours ``CORS_ORIGINS``, the Supabase fields honour
+    ``SUPABASE_URL`` / ``SUPABASE_SERVICE_ROLE_KEY`` / ``SUPABASE_BUCKET`` and
+    ``database_url`` honours ``DATABASE_URL``; unset or empty values fall back
+    to the safe local defaults (localhost origins, Supabase Storage disabled,
+    SQLite).
     """
     supabase_url, supabase_service_role_key, supabase_bucket = supabase_settings_from_env()
     return Settings(
@@ -124,6 +150,7 @@ def default_settings() -> Settings:
         allowed_mime_types=frozenset(gemini.ALLOWED_IMAGE_TYPES),
         allowed_extensions=ALLOWED_IMAGE_EXTENSIONS,
         cors_origins=cors_origins_from_env(),
+        database_url=database_url_from_env(),
         supabase_url=supabase_url,
         supabase_service_role_key=supabase_service_role_key,
         supabase_bucket=supabase_bucket,
@@ -140,6 +167,10 @@ def settings_for(db_path, upload_dir, **overrides) -> Settings:
         "allowed_mime_types": base.allowed_mime_types,
         "allowed_extensions": base.allowed_extensions,
         "cors_origins": base.cors_origins,
+        # Tests always run on SQLite: force None so a developer's
+        # DATABASE_URL can never reach the test suite (API test env cleanup
+        # strips the variable too). Individual tests may override explicitly.
+        "database_url": None,
         "supabase_url": base.supabase_url,
         "supabase_service_role_key": base.supabase_service_role_key,
         "supabase_bucket": base.supabase_bucket,

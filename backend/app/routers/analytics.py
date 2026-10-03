@@ -29,7 +29,9 @@ UNCLASSIFIED_LABEL = "Unclassified"
 )
 def summary(request: Request) -> schemas.AnalyticsSummaryOut:
     settings = request.app.state.settings
-    rows = database.list_complaints(db_path=settings.db_path)
+    rows = database.list_complaints(
+        db_path=settings.db_path, database_url=settings.database_url
+    )
 
     # Start from the allowed vocabularies so every key is always present,
     # even when the count is zero.

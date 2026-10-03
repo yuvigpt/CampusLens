@@ -1,30 +1,51 @@
 """
-CampusLens - database layer (SQLite via the standard-library sqlite3 module).
+CampusLens - database layer (SQLite by default, PostgreSQL when configured).
 
-No third-party database package is used or needed.
+Backends
+--------
+* **SQLite (default)** - the standard-library ``sqlite3`` module and the file
+  ``backend/campuslens.db``. This is what local development and the entire
+  test suite use; nothing about it changes when PostgreSQL support is unused.
+* **PostgreSQL (deployment)** - selected by passing a non-blank keyword-only
+  ``database_url`` (normally ``DATABASE_URL`` from the environment) to the
+  functions below. It uses psycopg 3 plus a small psycopg-pool pool. If the
+  URL is set but the server cannot be reached, startup/operation fails with a
+  sanitized error - there is never a silent fallback to SQLite, and the URL or
+  its credentials never appear in any message.
 
 Design notes
 ------------
-* The database file lives at ``backend/campuslens.db``. That path is derived
-  from THIS file's location, never from the terminal's current working
-  directory, so the app behaves the same no matter where it is launched from.
-* Every query is parameterized (``?`` placeholders). No SQL string formatting,
-  so user text can never be interpreted as SQL.
-* A fresh connection is opened per operation and always closed again. SQLite
-  allows only one writer at a time, so short-lived connections avoid
-  "database is locked" during a demo.
-* Each public function takes an optional keyword-only ``db_path``. Production
-  code leaves it out (uses the real database); tests pass a temporary file so
-  they never touch real data.
+* The SQLite database file lives at ``backend/campuslens.db``. That path is
+  derived from THIS file's location, never from the terminal's current
+  working directory, so the app behaves the same no matter where it is
+  launched from.
+* Every query is parameterized (``?`` placeholders in the SQL text; they are
+  translated to ``%s`` immediately before PostgreSQL execution). No SQL string
+  formatting, so user text can never be interpreted as SQL.
+* SQLite: a fresh connection is opened per operation and always closed again.
+  SQLite allows only one writer at a time, so short-lived connections avoid
+  "database is locked" during a demo. PostgreSQL: connections come from a
+  small thread-safe pool built on first use and closed by the app lifespan.
+* Timestamps are UTC text in exactly ``YYYY-MM-DD HH:MM:SS`` on both backends
+  (the PostgreSQL columns are TEXT so API output stays byte-identical).
+* Each public function takes optional keyword-only ``db_path`` and
+  ``database_url``. Production code passes the values from settings; tests
+  pass a temporary ``db_path`` and no URL so they never touch real data or a
+  real server.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional, Union
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 # ---------------------------------------------------------------------------
 # Paths (derived from this file, NOT the current working directory)
@@ -32,7 +53,22 @@ from typing import Any, Iterator, Optional, Union
 APP_DIR = Path(__file__).resolve().parent          # .../backend/app
 BACKEND_DIR = APP_DIR.parent                       # .../backend
 SCHEMA_PATH = APP_DIR / "schema.sql"
+PG_SCHEMA_PATH = APP_DIR / "schema_postgres.sql"   # applied when a URL is set
 DB_PATH = BACKEND_DIR / "campuslens.db"            # .../backend/campuslens.db
+
+# ---------------------------------------------------------------------------
+# PostgreSQL dialect fragments (fixed strings - the only SQL ever interpolated)
+# ---------------------------------------------------------------------------
+# Same output as SQLite's datetime('now'): UTC, no timezone suffix, second
+# resolution, format YYYY-MM-DD HH:MM:SS. PostgreSQL columns are TEXT so the
+# API and the frontend see byte-identical values on both backends.
+_PG_NOW = "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')"
+_SQLITE_NOW = "datetime('now')"
+
+# Pool kept deliberately small: one backend process must not eat the
+# database's whole connection budget.
+POOL_MIN_SIZE = 1
+POOL_MAX_SIZE = 4
 
 # ---------------------------------------------------------------------------
 # Domain constants - single source of truth shared with the API and frontend
@@ -76,6 +112,76 @@ _ALLOWED_SORTS: dict[str, str] = {
     "oldest": "created_at ASC, id ASC",
 }
 
+# The single PostgreSQL pool for this process: created on first use by
+# _ensure_pool(), closed by close_pool() (the app lifespan calls it on
+# shutdown). None means "SQLite mode" or "pool not built yet".
+_pool: Optional[ConnectionPool] = None
+_pool_url: Optional[str] = None
+
+
+def _pg_error(exc: BaseException, phase: str) -> RuntimeError:
+    """Build a clear PostgreSQL error that can never leak the URL.
+
+    Only the exception class name is reported: psycopg/libpq messages may
+    contain connection-string details (host, port, user, ...) and the URL
+    itself embeds credentials - none of which may ever be exposed.
+    """
+    return RuntimeError(
+        f"PostgreSQL {phase} failed (error type: {type(exc).__name__}). "
+        "DATABASE_URL is configured, so the application will NOT fall back "
+        "to SQLite; fix DATABASE_URL or the network and restart. "
+        "Connection details are omitted from this message on purpose."
+    )
+
+
+def _ensure_pool(database_url: str) -> ConnectionPool:
+    """Return the process-wide PostgreSQL pool, creating (and testing) it once.
+
+    Any failure to open the pool or reach the server raises a sanitized
+    RuntimeError: no half-built pool is kept and there is no SQLite fallback.
+    """
+    global _pool, _pool_url
+    if _pool is not None:
+        if _pool_url == database_url:
+            return _pool
+        close_pool()                      # URL changed (e.g. between tests)
+
+    try:
+        pool = ConnectionPool(
+            conninfo=database_url,
+            min_size=POOL_MIN_SIZE,
+            max_size=POOL_MAX_SIZE,
+            # row_factory -> rows behave like dicts, matching sqlite3.Row.
+            kwargs={"row_factory": dict_row},
+        )
+    except Exception as exc:              # malformed URL, bad setup, etc.
+        raise _pg_error(exc, "connection") from None
+
+    try:
+        with pool.connection() as conn:
+            conn.execute("SELECT 1")      # proves the server is reachable
+    except Exception as exc:
+        try:
+            pool.close()                  # never leave a half-built pool behind
+        except Exception:
+            pass
+        raise _pg_error(exc, "connection") from None
+
+    _pool = pool
+    _pool_url = database_url
+    return pool
+
+
+def close_pool() -> None:
+    """Close the PostgreSQL pool if one is open. No-op in SQLite mode."""
+    global _pool, _pool_url
+    if _pool is not None:
+        try:
+            _pool.close()
+        finally:
+            _pool = None
+            _pool_url = None
+
 
 # ---------------------------------------------------------------------------
 # Connection handling
@@ -99,12 +205,30 @@ def get_connection(db_path: Optional[Union[str, Path]] = None) -> sqlite3.Connec
 
 
 @contextmanager
-def connection(db_path: Optional[Union[str, Path]] = None) -> Iterator[sqlite3.Connection]:
+def connection(
+    db_path: Optional[Union[str, Path]] = None,
+    *,
+    database_url: Optional[str] = None,
+) -> Iterator[Any]:
     """Context manager: yields a connection, commits on success, always closes.
 
-    Commits on a clean exit, rolls back if an exception escapes, and closes the
-    connection in all cases.
+    SQLite (the default): opens a fresh connection, commits on a clean exit,
+    rolls back if an exception escapes, and closes in all cases - unchanged.
+
+    PostgreSQL (``database_url`` set): lends a pooled connection; psycopg-pool
+    commits on success, rolls back on error and returns it to the pool.
+    Connection-level failures are re-raised as sanitized errors (the URL and
+    its credentials are never exposed).
     """
+    if database_url:
+        pool = _ensure_pool(database_url)
+        try:
+            with pool.connection() as conn:
+                yield conn
+        except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+            raise _pg_error(exc, "operation") from None
+        return
+
     conn = get_connection(db_path)
     try:
         yield conn
@@ -116,12 +240,40 @@ def connection(db_path: Optional[Union[str, Path]] = None) -> Iterator[sqlite3.C
         conn.close()
 
 
-def init_db(db_path: Optional[Union[str, Path]] = None) -> Path:
-    """Create the database file and tables if they do not exist yet.
+def _execute(conn: Any, sql: str, params: Any) -> Any:
+    """Run ``sql`` with ``params`` on either backend.
 
-    Idempotent - safe to call on every application start. Returns the path of
-    the database that was initialized.
+    SQL text in this module always uses ``?`` placeholders (never present in
+    the validated fragments it is built from), so PostgreSQL execution simply
+    swaps them for its own ``%s`` marker; SQLite executes the text verbatim.
     """
+    if isinstance(conn, sqlite3.Connection):
+        return conn.execute(sql, params)
+    return conn.execute(sql.replace("?", "%s"), params)
+
+
+def init_db(
+    db_path: Optional[Union[str, Path]] = None,
+    *,
+    database_url: Optional[str] = None,
+) -> Path:
+    """Create the database file/tables if they do not exist yet.
+
+    Idempotent - safe to call on every application start.
+
+    * No ``database_url``: applies ``schema.sql`` to SQLite, exactly as before.
+    * ``database_url`` set: applies ``schema_postgres.sql`` to PostgreSQL.
+      Connection or statement failures propagate - startup fails loudly and
+      never falls back to SQLite.
+
+    Returns the path of the SQLite database that was initialized; in
+    PostgreSQL mode there is no file, so the (unused) local default path is
+    returned to keep the signature stable.
+    """
+    if database_url:
+        _init_postgres(database_url)
+        return Path(db_path) if db_path is not None else DB_PATH
+
     if not SCHEMA_PATH.is_file():
         raise FileNotFoundError(f"schema.sql not found at {SCHEMA_PATH}")
 
@@ -130,6 +282,33 @@ def init_db(db_path: Optional[Union[str, Path]] = None) -> Path:
         conn.executescript(schema_sql)
 
     return Path(db_path) if db_path is not None else DB_PATH
+
+
+def _init_postgres(database_url: str) -> None:
+    """Apply schema_postgres.sql to PostgreSQL. Idempotent, fails loudly."""
+    if not PG_SCHEMA_PATH.is_file():
+        raise FileNotFoundError(f"schema_postgres.sql not found at {PG_SCHEMA_PATH}")
+    statements = _split_ddl(PG_SCHEMA_PATH.read_text(encoding="utf-8"))
+    pool = _ensure_pool(database_url)      # validates reachability first
+    try:
+        with pool.connection() as conn:
+            for statement in statements:
+                conn.execute(statement)
+    except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+        raise _pg_error(exc, "initialization") from None
+
+
+def _split_ddl(sql_text: str) -> list[str]:
+    """Split a simple DDL script into individual statements.
+
+    Used only for schema_postgres.sql, which contains no functions, dollar
+    quoting, or semicolons inside string literals - so stripping ``--``
+    comments and splitting on ``;`` is exact.
+    """
+    without_comments = "\n".join(
+        line.split("--", 1)[0] for line in sql_text.splitlines()
+    )
+    return [stmt.strip() for stmt in without_comments.split(";") if stmt.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +381,8 @@ def _serialize_breakdown(value: Any) -> Optional[str]:
     raise ValueError("'score_breakdown' must be a dict, a JSON string, or None")
 
 
-def _row_to_complaint(row: Optional[sqlite3.Row]) -> Optional[dict[str, Any]]:
-    """Convert a sqlite3.Row into a plain dict, decoding score_breakdown.
+def _row_to_complaint(row: Optional[Any]) -> Optional[dict[str, Any]]:
+    """Convert a database row (sqlite3.Row or psycopg dict row) into a plain dict.
 
     score_breakdown is stored as TEXT but returned as a dict (when it parses),
     because that is what the API and the dashboard want to render.
@@ -242,6 +421,7 @@ def create_complaint(
     score_breakdown: Optional[Union[dict[str, Any], str]] = None,
     status: str = STATUS_REPORTED,
     db_path: Optional[Union[str, Path]] = None,
+    database_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Insert one complaint and return it as a dict (including its new id).
 
@@ -264,7 +444,8 @@ def create_complaint(
     score_breakdown_json = _serialize_breakdown(score_breakdown)
     status = _validate_status(status)
 
-    sql = """
+    now_expr = _PG_NOW if database_url else _SQLITE_NOW
+    sql = f"""
         INSERT INTO complaints (
             description, location, image_path, category, issue_summary,
             safety_risk, functional_impact, urgency, evidence_from_image,
@@ -272,7 +453,7 @@ def create_complaint(
             status, resolved_at
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            CASE WHEN ? = 'Resolved' THEN datetime('now') ELSE NULL END
+            CASE WHEN ? = 'Resolved' THEN {now_expr} ELSE NULL END
         )
     """
     params = (
@@ -282,11 +463,16 @@ def create_complaint(
         status, status,                      # 2nd 'status' feeds the resolved_at CASE
     )
 
-    with connection(db_path) as conn:
-        cursor = conn.execute(sql, params)
-        new_id = cursor.lastrowid
+    with connection(db_path, database_url=database_url) as conn:
+        if database_url:
+            # PostgreSQL has no lastrowid; RETURNING gives the new id back.
+            cursor = _execute(conn, sql + " RETURNING id", params)
+            new_id = cursor.fetchone()["id"]
+        else:
+            cursor = conn.execute(sql, params)
+            new_id = cursor.lastrowid
 
-    created = get_complaint(new_id, db_path=db_path)
+    created = get_complaint(new_id, db_path=db_path, database_url=database_url)
     if created is None:                      # pragma: no cover - should never happen
         raise RuntimeError(f"Complaint {new_id} was inserted but could not be read back")
     return created
@@ -307,13 +493,14 @@ def get_complaint(
     complaint_id: int,
     *,
     db_path: Optional[Union[str, Path]] = None,
+    database_url: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Fetch a single complaint by id. Returns None if it does not exist."""
     complaint_id = _validate_int(complaint_id, "complaint_id", minimum=1)
 
     sql = f"SELECT {_SELECT_COLUMNS} FROM complaints WHERE id = ?"
-    with connection(db_path) as conn:
-        row = conn.execute(sql, (complaint_id,)).fetchone()
+    with connection(db_path, database_url=database_url) as conn:
+        row = _execute(conn, sql, (complaint_id,)).fetchone()
     return _row_to_complaint(row)
 
 
@@ -325,6 +512,7 @@ def list_complaints(
     limit: Optional[int] = None,
     offset: Optional[int] = 0,
     db_path: Optional[Union[str, Path]] = None,
+    database_url: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """List complaints, by default highest priority first.
 
@@ -364,12 +552,21 @@ def list_complaints(
     if limit is not None or (offset or 0) > 0:
         clean_limit = None if limit is None else _validate_int(limit, "limit")
         clean_offset = _validate_int(offset or 0, "offset")
-        # SQLite needs a LIMIT before it will accept an OFFSET; -1 means "no limit".
-        sql += " LIMIT ? OFFSET ?"
-        params.extend([-1 if clean_limit is None else clean_limit, clean_offset])
+        if database_url:
+            # PostgreSQL rejects LIMIT -1; OFFSET alone means "no limit".
+            if clean_limit is not None:
+                sql += " LIMIT ? OFFSET ?"
+                params.extend([clean_limit, clean_offset])
+            else:
+                sql += " OFFSET ?"
+                params.append(clean_offset)
+        else:
+            # SQLite needs a LIMIT before it will accept an OFFSET; -1 means "no limit".
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if clean_limit is None else clean_limit, clean_offset])
 
-    with connection(db_path) as conn:
-        rows = conn.execute(sql, params).fetchall()
+    with connection(db_path, database_url=database_url) as conn:
+        rows = _execute(conn, sql, params).fetchall()
     return [_row_to_complaint(row) for row in rows]
 
 
@@ -381,6 +578,7 @@ def update_complaint_status(
     status: str,
     *,
     db_path: Optional[Union[str, Path]] = None,
+    database_url: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Change a complaint's status. Returns the updated complaint, or None if unknown.
 
@@ -391,19 +589,20 @@ def update_complaint_status(
     complaint_id = _validate_int(complaint_id, "complaint_id", minimum=1)
     status = _validate_status(status)
 
-    sql = """
+    now_expr = _PG_NOW if database_url else _SQLITE_NOW
+    sql = f"""
         UPDATE complaints
            SET status      = ?,
-               updated_at  = datetime('now'),
-               resolved_at = CASE WHEN ? = 'Resolved' THEN datetime('now') ELSE NULL END
+               updated_at  = {now_expr},
+               resolved_at = CASE WHEN ? = 'Resolved' THEN {now_expr} ELSE NULL END
          WHERE id = ?
     """
-    with connection(db_path) as conn:
-        cursor = conn.execute(sql, (status, status, complaint_id))
+    with connection(db_path, database_url=database_url) as conn:
+        cursor = _execute(conn, sql, (status, status, complaint_id))
         if cursor.rowcount == 0:
             return None                      # no such complaint
 
-    return get_complaint(complaint_id, db_path=db_path)
+    return get_complaint(complaint_id, db_path=db_path, database_url=database_url)
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +614,9 @@ def _main() -> int:
     print("CampusLens database ready")
     print(f"  file  : {path}")
     print(f"  schema: {SCHEMA_PATH}")
+    if (os.environ.get("DATABASE_URL") or "").strip():
+        print("  note  : DATABASE_URL is set - PostgreSQL is initialized when")
+        print("          the app starts, not by this SQLite-only CLI.")
     with connection() as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall()
         names = [r["name"] for r in rows if not r["name"].startswith("sqlite_")]

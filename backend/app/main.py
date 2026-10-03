@@ -31,11 +31,20 @@ _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Prepare storage once, at startup. Safe to run repeatedly (idempotent)."""
+    """Prepare storage and the database once, at startup (idempotent).
+
+    When ``settings.database_url`` is set (``DATABASE_URL`` in the
+    environment), the schema is applied to PostgreSQL and a connection failure
+    aborts startup loudly - there is no silent fallback to SQLite. The
+    PostgreSQL pool is closed again on shutdown.
+    """
     settings: config.Settings = app.state.settings
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    database.init_db(settings.db_path)
-    yield
+    try:
+        database.init_db(settings.db_path, database_url=settings.database_url)
+        yield
+    finally:
+        database.close_pool()
 
 
 def create_app(settings: Optional[config.Settings] = None) -> FastAPI:
