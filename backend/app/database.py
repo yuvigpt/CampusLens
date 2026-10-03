@@ -246,10 +246,21 @@ def _execute(conn: Any, sql: str, params: Any) -> Any:
     SQL text in this module always uses ``?`` placeholders (never present in
     the validated fragments it is built from), so PostgreSQL execution simply
     swaps them for its own ``%s`` marker; SQLite executes the text verbatim.
+
+    PostgreSQL runs with ``prepare=False``. psycopg would otherwise turn every
+    parameterized query into a server-side prepared statement (``_pg3_0``, ...),
+    and prepared statements belong to a *session*. Supabase's Transaction
+    Pooler may hand the same session a different PostgreSQL backend between
+    transactions, so a statement can then be missing ("prepared statement does
+    not exist") or already present ("already exists"). Unnamed statements are
+    immune to that; the SQL, parameters and row factory are unchanged.
+
+    ``sqlite3.Connection.execute`` has no ``prepare`` parameter, so the flag is
+    deliberately applied to the PostgreSQL branch only.
     """
     if isinstance(conn, sqlite3.Connection):
         return conn.execute(sql, params)
-    return conn.execute(sql.replace("?", "%s"), params)
+    return conn.execute(sql.replace("?", "%s"), params, prepare=False)
 
 
 def init_db(

@@ -69,14 +69,16 @@ class _FakePGConnection:
 
     def __init__(self, read_rows=None, update_rowcount=1):
         self.executed: list[tuple[str, object]] = []
+        self.execute_kwargs: list[dict] = []
         self._read_rows = list(read_rows) if read_rows is not None else [_complaint_row()]
         self._update_rowcount = update_rowcount
         self.fail_with: Exception | None = None
 
-    def execute(self, sql, params=None):
+    def execute(self, sql, params=None, **kwargs):
         if self.fail_with is not None:
             raise self.fail_with
         self.executed.append((sql, params))
+        self.execute_kwargs.append(kwargs)
         if "RETURNING id" in sql:
             return _FakeCursor(rows=[{"id": 42}])
         if sql.lstrip().upper().startswith("SELECT 1"):
@@ -184,6 +186,42 @@ class SqlTranslationTest(unittest.TestCase):
         database._execute(conn, "INSERT INTO t VALUES (?)", (7,))
         rows = database._execute(conn, "SELECT a FROM t WHERE a = ?", (7,)).fetchall()
         self.assertEqual([tuple(r) for r in rows], [(7,)])
+
+    def test_pg_execute_disables_prepared_statements(self):
+        """Parameterized PG execution must not use server-side prepared statements.
+
+        Supabase's Transaction Pooler can move a session to a different
+        PostgreSQL backend between transactions, which breaks the session-scoped
+        ``_pg3_N`` prepared statements psycopg would otherwise create.
+        """
+        fake = _FakePGConnection()
+        database._execute(fake, "SELECT * FROM t WHERE a = ?", (1,))
+        self.assertEqual(fake.execute_kwargs[0].get("prepare"), False)
+
+    def test_every_pg_query_path_disables_prepared_statements(self):
+        """All four public PG operations funnel through _execute."""
+        fake = _FakePGConnection()
+        pool = _FakePool(connection_obj=fake)
+        with mock.patch.object(database, "_ensure_pool", return_value=pool):
+            database.create_complaint(
+                description="Broken lamp", location="Library", database_url=PG_URL
+            )
+            database.get_complaint(42, database_url=PG_URL)
+            database.list_complaints(database_url=PG_URL)
+            database.update_complaint_status(42, "Resolved", database_url=PG_URL)
+        self.assertEqual(len(fake.execute_kwargs), len(fake.executed))
+        self.assertGreater(len(fake.execute_kwargs), 0)
+        self.assertTrue(
+            all(kwargs.get("prepare") is False for kwargs in fake.execute_kwargs)
+        )
+
+    def test_sqlite_path_never_sees_the_prepare_flag(self):
+        """sqlite3.execute has no ``prepare`` parameter, so the flag stays PG-only."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        # Would raise TypeError if prepare= leaked into the SQLite branch.
+        database._execute(conn, "SELECT ?", (5,))
+        self.assertEqual(database._execute(conn, "SELECT ?", (5,)).fetchone()[0], 5)
 
     def test_timestamp_expressions(self):
         self.assertEqual(database._SQLITE_NOW, "datetime('now')")
