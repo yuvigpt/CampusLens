@@ -32,8 +32,10 @@ HTTP 502 without echoing the message back to API clients.
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Optional
+from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -48,6 +50,14 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 # One path segment of a bucket name or object key: plain, URL-safe text.
 _SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 
+# Diagnostics for failed Supabase calls. This module never logs anything about
+# the REQUEST (headers, image bytes, URLs), only about the RESPONSE, and only
+# after every secret-shaped value has been removed from it.
+logger = logging.getLogger("campuslens.storage")
+_SECRET_LIKE = re.compile(r"eyJ[A-Za-z0-9._-]+")          # JWT-shaped token
+_URL_LIKE = re.compile(r"https?://\S+", re.IGNORECASE)      # any URL
+_MAX_MESSAGE_CHARS = 200
+
 
 class StorageError(Exception):
     """A Supabase Storage operation failed. Never carries the service key."""
@@ -58,6 +68,72 @@ def _redact(message: str, secret: Optional[str]) -> str:
     if secret and secret in message:
         message = message.replace(secret, "[redacted]")
     return message
+
+
+def _scrub(text: str, *secrets: Optional[str]) -> str:
+    """Remove the key, the project URL/host, the bucket, the object path,
+    every URL and every JWT-shaped token from ``text``."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return _URL_LIKE.sub("[redacted]", _SECRET_LIKE.sub("[redacted]", text))
+
+
+def _is_safe(text: str, *secrets: Optional[str]) -> bool:
+    """True only when no key, host, URL or JWT can still be present."""
+    if any(secret and secret in text for secret in secrets):
+        return False
+    return not (_URL_LIKE.search(text) or _SECRET_LIKE.search(text))
+
+
+def _diagnostic(
+    phase: str,
+    response: Any,
+    secret: str,
+    *,
+    base: str = "",
+    bucket: str = "",
+    object_path: str = "",
+) -> None:
+    """Log WHY Supabase refused a request - never WHAT we sent.
+
+    Always recorded: phase, HTTP status, Supabase error type, request id. The
+    response message is recorded only when it can be proven free of the service
+    key, the project URL/host, the bucket name, the object path, JWTs and
+    URLs; otherwise it is omitted entirely. Request headers, request bodies,
+    image bytes and signed URLs are never read here.
+    """
+    host = urlsplit(base).netloc if base else ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+
+    fields: tuple[Optional[str], ...] = (secret, base, host, bucket, object_path)
+    error = "unknown"
+    message = ""
+    if isinstance(body, dict):
+        raw_error = body.get("error") or body.get("statusCode")
+        if raw_error is not None:
+            error = _scrub(str(raw_error), *fields)[:64] or "unknown"
+        raw_message = body.get("message")
+        if isinstance(raw_message, str) and raw_message.strip():
+            candidate = _scrub(raw_message.strip(), *fields)
+            # Final gate: if anything sensitive survived, drop the message.
+            if _is_safe(candidate, secret, host):
+                message = candidate[:_MAX_MESSAGE_CHARS]
+
+    headers = getattr(response, "headers", None) or {}
+    request_id = _scrub(str(headers.get("x-sb-request-id") or ""), secret)[:64] or "-"
+
+    logger.warning(
+        "supabase storage %s rejected (http=%s type=%s request_id=%s) message=%s",
+        phase,
+        response.status_code,
+        error,
+        request_id,
+        message or "omitted",
+    )
 
 
 def _require(settings: config.Settings) -> tuple[str, str, str]:
@@ -117,7 +193,8 @@ def upload(
             _redact(f"Supabase Storage is unreachable ({type(exc).__name__}).", key)
         ) from exc
     if not 200 <= response.status_code < 300:
-        # Only the status code is reported - never the response body.
+        _diagnostic("upload", response, key, base=base, bucket=bucket, object_path=path)
+        # Only the status code is reported to the caller - never the body.
         raise StorageError(
             _redact(
                 f"Supabase Storage rejected the upload (HTTP {response.status_code}).",
@@ -154,6 +231,7 @@ def signed_url(
             _redact(f"Supabase Storage is unreachable ({type(exc).__name__}).", key)
         ) from exc
     if not 200 <= response.status_code < 300:
+        _diagnostic("sign", response, key, base=base, bucket=bucket, object_path=path)
         raise StorageError(
             _redact(
                 f"Supabase Storage could not sign the object "

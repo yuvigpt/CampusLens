@@ -42,10 +42,11 @@ class _EnvIsolatedTestCase(unittest.TestCase):
 class _FakeResponse:
     """Just enough of httpx.Response for the code under test."""
 
-    def __init__(self, status_code=200, payload=None, *, json_error=False):
+    def __init__(self, status_code=200, payload=None, *, json_error=False, headers=None):
         self.status_code = status_code
         self._payload = payload
         self._json_error = json_error
+        self.headers = dict(headers or {})
 
     def json(self):
         if self._json_error:
@@ -358,3 +359,153 @@ class SignedUrlTest(_EnvIsolatedTestCase):
         with mock.patch.object(storage.httpx, "post", return_value=fake):
             result = storage.signed_url(self.settings, self.object_path)
         self.assertEqual(result, absolute)
+
+
+class StorageDiagnosticsTest(_EnvIsolatedTestCase):
+    """Failure diagnostics: enough to debug, never enough to leak.
+
+    The logs explain WHY Supabase refused a request (phase, HTTP status,
+    error type, request id and a redacted message) while proving that no key,
+    JWT, URL, bucket name or object path can appear in them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.settings = _settings()
+        self.object_path = f"uploads/{GENERATED_NAME}"
+
+    def _fail_upload(self, response):
+        with mock.patch.object(storage.httpx, "post", return_value=response):
+            with self.assertRaises(storage.StorageError):
+                storage.upload(
+                    self.settings,
+                    b"BYTES",
+                    content_type="image/png",
+                    object_path=self.object_path,
+                )
+
+    def _fail_sign(self, response):
+        with mock.patch.object(storage.httpx, "post", return_value=response):
+            with self.assertRaises(storage.StorageError):
+                storage.signed_url(self.settings, self.object_path)
+
+    def _logged(self, response, fail):
+        with self.assertLogs("campuslens.storage", level="WARNING") as logs:
+            fail(response)
+        return "\n".join(logs.output)
+
+    def test_upload_failure_logs_phase_status_type_and_request_id(self):
+        response = _FakeResponse(
+            400,
+            {"statusCode": "400", "error": "InvalidRequest", "message": "bad body"},
+            headers={"x-sb-request-id": "req-upload-1"},
+        )
+        line = self._logged(response, self._fail_upload)
+
+        self.assertIn("supabase storage upload rejected", line)
+        self.assertIn("http=400", line)
+        self.assertIn("type=InvalidRequest", line)
+        self.assertIn("request_id=req-upload-1", line)
+        self.assertIn("message=bad body", line)
+
+    def test_sign_failure_logs_phase_status_type_and_request_id(self):
+        response = _FakeResponse(
+            400,
+            {"statusCode": "400", "error": "InvalidRequest", "message": "missing field"},
+            headers={"x-sb-request-id": "req-sign-1"},
+        )
+        line = self._logged(response, self._fail_sign)
+
+        self.assertIn("supabase storage sign rejected", line)
+        self.assertIn("http=400", line)
+        self.assertIn("type=InvalidRequest", line)
+        self.assertIn("request_id=req-sign-1", line)
+
+    def test_diagnostics_never_leak_key_urls_jwt_bucket_or_path(self):
+        """A hostile error message is scrubbed of every sensitive value."""
+        hostile = (
+            f"Invalid JWT {FAKE_KEY} for {PROJECT}/storage/v1/object/{BUCKET}/"
+            f"{self.object_path} (eyJhbGciOiJIUzI1NiJ9.payload.signature)"
+        )
+        response = _FakeResponse(
+            400,
+            {"statusCode": "400", "error": "InvalidRequest", "message": hostile},
+            headers={"x-sb-request-id": "req-leak"},
+        )
+        line = self._logged(response, self._fail_upload)
+
+        for forbidden in (
+            FAKE_KEY,
+            PROJECT,
+            "example.supabase.co",
+            BUCKET,
+            GENERATED_NAME,
+            self.object_path,
+            "eyJhbGciOiJIUzI1NiJ9",
+            "https://",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, line)
+        self.assertIn("[redacted]", line)
+        self.assertIn("request_id=req-leak", line)
+
+    def test_message_is_omitted_when_it_cannot_be_proven_safe(self):
+        """A malformed (non-dict) error body logs only the safe fields."""
+        for payload, as_json in ((["not", "a", "dict"], False), (None, True)):
+            with self.subTest(payload=payload):
+                response = _FakeResponse(
+                    502, payload, json_error=as_json,
+                    headers={"x-sb-request-id": "req-malformed"},
+                )
+                line = self._logged(response, self._fail_sign)
+
+                self.assertIn("supabase storage sign rejected", line)
+                self.assertIn("http=502", line)
+                self.assertIn("type=unknown", line)
+                self.assertIn("request_id=req-malformed", line)
+                self.assertIn("message=omitted", line)
+
+    def test_long_error_message_is_truncated(self):
+        response = _FakeResponse(
+            400, {"error": "InvalidRequest", "message": "x" * 5000}
+        )
+        line = self._logged(response, self._fail_upload)
+
+        self.assertIn("message=" + "x" * storage._MAX_MESSAGE_CHARS, line)
+        self.assertNotIn("x" * (storage._MAX_MESSAGE_CHARS + 1), line)
+
+    def test_successful_calls_log_nothing(self):
+        """No diagnostics on the happy path - and no signed URL either."""
+        signed = f"/object/sign/{BUCKET}/{self.object_path}?token=abc.def"
+        with mock.patch.object(
+            storage.httpx, "post", return_value=_FakeResponse(200, {"signedURL": signed})
+        ):
+            with mock.patch.object(storage.logger, "warning") as warning:
+                storage.signed_url(self.settings, self.object_path)
+                storage.upload(
+                    self.settings, b"BYTES", content_type="image/png",
+                    object_path=self.object_path,
+                )
+        warning.assert_not_called()
+
+    def test_failure_message_and_exception_behaviour_are_unchanged(self):
+        """Diagnostics are additive: the caller still gets status-code-only."""
+        response = _FakeResponse(
+            400,
+            {
+                "statusCode": "400",
+                "error": "InvalidRequest",
+                "message": f"nope {FAKE_KEY}",
+            },
+        )
+        with mock.patch.object(storage.httpx, "post", return_value=response):
+            with self.assertRaises(storage.StorageError) as ctx:
+                storage.upload(
+                    self.settings, b"x", content_type="image/png",
+                    object_path=self.object_path,
+                )
+        message = str(ctx.exception)
+        self.assertIn("400", message)
+        self.assertIn("rejected the upload", message)
+        self.assertNotIn(FAKE_KEY, message)
+        self.assertNotIn("nope", message)          # body still never echoed
