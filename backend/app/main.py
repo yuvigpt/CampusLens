@@ -60,6 +60,14 @@ def create_app(settings: Optional[config.Settings] = None) -> FastAPI:
     # A fresh router per app: FastAPI only allows one include per instance.
     app.include_router(_complaints_routes.build_router())
 
+    @app.get("/", tags=["meta"])
+    def root() -> dict[str, str]:
+        return {
+            "status": "ok",
+            "service": app_settings.service_name,
+            "version": app_settings.service_version,
+        }
+
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
         """Last line of defence: never leak a traceback, SQL text or secret."""
@@ -83,3 +91,11 @@ def __getattr__(name: str):
         globals()["app"] = instance
         return instance
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "10000"))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
