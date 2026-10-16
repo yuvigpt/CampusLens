@@ -1,36 +1,36 @@
-# ============================================================
 # CampusLens - backend dependencies
 #
-# Install into the project venv with:
-#   backend\venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-# (or activate first:  backend\venv\Scripts\Activate.ps1  then  pip install -r requirements.txt)
+# Install into the project venv:
+#   python -m venv venv
+#   .\venv\Scripts\python.exe -m pip install -r requirements.txt
 #
-# Versions below are the exact ones verified working on Python 3.14.0 (Windows).
-# ============================================================
+# The application targets Supabase PostgreSQL only. There is no SQLite mode:
+# the Stage 1 schema is Postgres-specific (uuid keys, RLS, auth.users FK).
 
 # --- Web framework + ASGI server ---
 fastapi==0.142.2
 uvicorn==0.54.0
 
-# --- multipart/form-data parsing (REQUIRED by FastAPI for image uploads) ---
+# --- multipart/form-data parsing (REQUIRED for image uploads) ---
 python-multipart==0.0.32
 
-# --- Gemini AI SDK, multimodal (image + text) ---
-google-genai==2.27.0
-
-# --- loads backend/.env into os.environ ---
-python-dotenv==1.2.4
-
-# --- Supabase Storage REST calls (upload + signed URLs).
-# Already present transitively via Starlette/httpx; pinned explicitly now
-# that application code (app/storage.py) imports it directly. Verified on
-# Python 3.14.0. ---
-httpx==0.28.1
-
-# --- PostgreSQL / Supabase (DATABASE_URL mode) ---
-# Used only when DATABASE_URL is set; not needed for local SQLite development.
-# Verified on Python 3.14.0 (installs the cp314 binary wheel).
-# psycopg-pool provides the small thread-safe connection pool used by
-# app/database.py. SQLite remains the default when DATABASE_URL is unset.
+# --- PostgreSQL (Supabase). The 42P17 fix in migration 001 is why
+# --- psycopg.autocommit is used: SET LOCAL ROLE inside an explicit
+# --- transaction block is not permitted on an autocommit connection.
 psycopg[binary]==3.3.2
 psycopg-pool==3.2.6
+
+# --- Supabase Auth JWT verification over JWKS ---
+httpx==0.28.1
+PyJWT[crypto]==2.11.0
+cryptography==50.0.2
+
+# --- AI analysis (optional; submission never depends on it) ---
+google-genai==2.27.0
+
+# --- .env loading for local development only ---
+python-dotenv==1.2.4
+
+# --- tests ---
+pytest==9.0.1
+pytest-asyncio==1.3.0

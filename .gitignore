@@ -49,3 +49,8 @@ WhatsApp Image*.jpeg
 .agents/
 .kombai/
 skills-lock.json
+
+# ---------- local scratch Supabase verification ----------
+# Run notes and exports from docs/SCRATCH_VERIFICATION.md. The checklist
+# itself is safe to keep; anything copied out of it is not.
+docs/*.local.md

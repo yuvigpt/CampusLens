@@ -34,21 +34,28 @@ in this app**; the Gemini key lives exclusively in `backend/.env`.
 
 | Method | Path | Used for |
 | --- | --- | --- |
-| GET | `/api/health` | header status pill |
-| POST | `/api/complaints` | multipart `image` + `description` + `location` |
-| GET | `/api/complaints` | `status`, `category`, `sort`, `limit`, `offset` |
-| PATCH | `/api/complaints/{id}/status` | body `{"status": "..."}` |
-| GET | `/api/analytics/summary` | dashboard counters and breakdowns |
-| GET | `/uploads/{filename}` | complaint images (prefix with the API base URL) |
+| GET | `/api/health` | header status pill (no auth) |
+| POST | `/api/complaints` | multipart `image` + `description` + `location` (any signed-in user) |
+| GET | `/api/complaints` | own complaints only - `status`, `sort`, `limit`, `offset` |
+| GET | `/api/complaints/{id}` | own complaint only; 404 for anyone else |
+| GET | `/api/admin/complaints` | every complaint (admin) |
+| GET | `/api/admin/complaints/{id}` | one complaint with its score (admin) |
+| PATCH | `/api/admin/complaints/{id}/status` | body `{"status": "..."}` (admin) |
+| PATCH | `/api/admin/complaints/{id}/analysis` | `{"confirmed_urgency","confirmed_impact","confirmed_safety"}` (admin) - the only endpoint that scores |
+| GET | `/api/admin/analytics/summary` | `total`, `by_status`, `by_band`, `unscored`, `unresolved` (admin) |
+| GET | `/api/public/complaints` | approved, sanitized entries (no auth) |
+
+Images are served as short-lived **signed URLs** returned by the backend in
+`image_url`; they are used as-is and never constructed in the browser.
 
 ## Honesty rules baked into the UI
 
-- A band/score is **only** ever the `priority_band` / `priority_score` the API
+- A score is **only** ever the `priority_score` the API
   returned. Nothing is recomputed or invented client-side.
 - `priority_score == null` renders as **Unscored** (dashed badge + explicit
   note), never as Low or 0.
-- `uncertainty_or_missing_information`, backend `warnings` and
-  `analysis.error` / `error_kind` are shown verbatim.
+- `ai_*` fields are shown as an **AI suggestion** only. The values that are
+  scored are the `confirmed_*` levels an administrator sets explicitly.
 - Status badges show the stored status; "Resolved" only appears when the
   backend says `Resolved`.
 - `analysis` and `warnings` are only returned by `POST /api/complaints`, so

@@ -1,641 +1,740 @@
 """
-CampusLens - database layer (SQLite by default, PostgreSQL when configured).
+CampusLens - Supabase PostgreSQL data access.
 
-Backends
---------
-* **SQLite (default)** - the standard-library ``sqlite3`` module and the file
-  ``backend/campuslens.db``. This is what local development and the entire
-  test suite use; nothing about it changes when PostgreSQL support is unused.
-* **PostgreSQL (deployment)** - selected by passing a non-blank keyword-only
-  ``database_url`` (normally ``DATABASE_URL`` from the environment) to the
-  functions below. It uses psycopg 3 plus a small psycopg-pool pool. If the
-  URL is set but the server cannot be reached, startup/operation fails with a
-  sanitized error - there is never a silent fallback to SQLite, and the URL or
-  its credentials never appear in any message.
+Every statement is parameterised; no SQL is ever built by string formatting of
+user input. Identifier names come only from the fixed tuples in this module.
 
-Design notes
-------------
-* The SQLite database file lives at ``backend/campuslens.db``. That path is
-  derived from THIS file's location, never from the terminal's current
-  working directory, so the app behaves the same no matter where it is
-  launched from.
-* Every query is parameterized (``?`` placeholders in the SQL text; they are
-  translated to ``%s`` immediately before PostgreSQL execution). No SQL string
-  formatting, so user text can never be interpreted as SQL.
-* SQLite: a fresh connection is opened per operation and always closed again.
-  SQLite allows only one writer at a time, so short-lived connections avoid
-  "database is locked" during a demo. PostgreSQL: connections come from a
-  small thread-safe pool built on first use and closed by the app lifespan.
-* Timestamps are UTC text in exactly ``YYYY-MM-DD HH:MM:SS`` on both backends
-  (the PostgreSQL columns are TEXT so API output stays byte-identical).
-* Each public function takes optional keyword-only ``db_path`` and
-  ``database_url``. Production code passes the values from settings; tests
-  pass a temporary ``db_path`` and no URL so they never touch real data or a
-  real server.
+Row Level Security is the real authorisation boundary. Each request opens a
+transaction and issues::
+
+    SET LOCAL ROLE authenticated;
+    SET LOCAL request.jwt.claims = '{"sub":"<uuid>","role":"authenticated"}';
+
+so the policies written in the Stage 1 migrations (001-009) are evaluated by
+PostgreSQL exactly as they are for a browser client. The application never
+"decides" who may see a row; it only supplies the verified identity.
+
+The service-role key is NEVER used for data access. Only the pooled
+``DATABASE_URL`` is used, and the identity is applied with SET LOCAL ROLE
+inside the request's transaction so it is reverted on commit or rollback.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
+import logging
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Iterator, Optional
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-# ---------------------------------------------------------------------------
-# Paths (derived from this file, NOT the current working directory)
-# ---------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent          # .../backend/app
-BACKEND_DIR = APP_DIR.parent                       # .../backend
-SCHEMA_PATH = APP_DIR / "schema.sql"
-PG_SCHEMA_PATH = APP_DIR / "schema_postgres.sql"   # applied when a URL is set
-DB_PATH = BACKEND_DIR / "campuslens.db"            # .../backend/campuslens.db
+from . import scoring
 
-# ---------------------------------------------------------------------------
-# PostgreSQL dialect fragments (fixed strings - the only SQL ever interpolated)
-# ---------------------------------------------------------------------------
-# Same output as SQLite's datetime('now'): UTC, no timezone suffix, second
-# resolution, format YYYY-MM-DD HH:MM:SS. PostgreSQL columns are TEXT so the
-# API and the frontend see byte-identical values on both backends.
-_PG_NOW = "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')"
-_SQLITE_NOW = "datetime('now')"
+logger = logging.getLogger("campuslens.db")
 
-# Pool kept deliberately small: one backend process must not eat the
-# database's whole connection budget.
 POOL_MIN_SIZE = 1
-POOL_MAX_SIZE = 4
+POOL_MAX_SIZE = 8
 
-# ---------------------------------------------------------------------------
-# Domain constants - single source of truth shared with the API and frontend
-# ---------------------------------------------------------------------------
-STATUS_REPORTED = "Reported"
-STATUS_IN_PROGRESS = "In Progress"
-STATUS_RESOLVED = "Resolved"
-
-ALLOWED_STATUSES: tuple[str, ...] = (STATUS_REPORTED, STATUS_IN_PROGRESS, STATUS_RESOLVED)
-ALLOWED_LEVELS: tuple[str, ...] = ("Low", "Medium", "High")
-
-# Columns of the complaints table, in schema order. Used to build SELECT lists
-# and to validate column names, which keeps identifiers out of f-strings.
-COMPLAINT_COLUMNS: tuple[str, ...] = (
-    "id",
-    "description",
-    "location",
-    "image_path",
-    "category",
-    "issue_summary",
-    "safety_risk",
-    "functional_impact",
-    "urgency",
-    "evidence_from_image",
-    "uncertainty_or_missing_information",
-    "priority_score",
-    "score_breakdown",
-    "status",
-    "created_at",
-    "updated_at",
-    "resolved_at",
+PRIVATE_COMPLAINT_COLUMNS: tuple[str, ...] = (
+    "id", "student_id", "description", "location_raw", "location_code",
+    "recurrence_na", "image_path",
+    "ai_category", "ai_summary", "ai_evidence", "ai_uncertainty",
+    "ai_urgency", "ai_impact", "ai_safety",
+    "confirmed_urgency", "confirmed_impact", "confirmed_safety",
+    "analysis_confirmed_at", "confirmed_by",
+    "priority_score", "score_breakdown", "score_version", "score_computed_at",
+    "status", "created_at", "updated_at", "resolved_at",
 )
 
-_SELECT_COLUMNS = ", ".join(COMPLAINT_COLUMNS)
+_SELECT_LIST = ", ".join(PRIVATE_COMPLAINT_COLUMNS)
 
-# ORDER BY fragments. Keys are looked up in this dict, so the caller's `sort`
-# value can never be injected into the SQL text.
-_ALLOWED_SORTS: dict[str, str] = {
-    "priority": "priority_score IS NULL, priority_score DESC, created_at DESC",
-    "newest": "created_at DESC, id DESC",
-    "oldest": "created_at ASC, id ASC",
-}
+# SQL CASE mirroring scoring.band_for_score() so a band filter compares against
+# exactly the label the admin sees in the response body (which is derived from
+# priority_score, never from a stored column - complaints has no band column).
+# The boundaries are the scoring module's constants, interpolated as integers:
+# no user input ever reaches this string.
+_BAND_CASE_SQL = f"""
+    CASE
+        WHEN priority_score IS NULL THEN 'Unscored'
+        WHEN priority_score <= {scoring.BAND_LOW_MAX} THEN 'Low'
+        WHEN priority_score <= {scoring.BAND_MEDIUM_MAX} THEN 'Medium'
+        WHEN priority_score <= {scoring.BAND_HIGH_MAX} THEN 'High'
+        ELSE 'Critical'
+    END
+"""
 
-# The single PostgreSQL pool for this process: created on first use by
-# _ensure_pool(), closed by close_pool() (the app lifespan calls it on
-# shutdown). None means "SQLite mode" or "pool not built yet".
+PUBLIC_COLUMNS: tuple[str, ...] = (
+    "id", "public_summary", "public_category", "public_location",
+    "status", "approved_at",
+)
+
+_PUBLIC_SELECT_LIST = ", ".join(PUBLIC_COLUMNS)
+
 _pool: Optional[ConnectionPool] = None
-_pool_url: Optional[str] = None
 
 
-def _pg_error(exc: BaseException, phase: str) -> RuntimeError:
-    """Build a clear PostgreSQL error that can never leak the URL.
+class DatabaseError(RuntimeError):
+    """A database operation failed. Never carries the connection URL."""
 
-    Only the exception class name is reported: psycopg/libpq messages may
-    contain connection-string details (host, port, user, ...) and the URL
-    itself embeds credentials - none of which may ever be exposed.
+
+class Identity:
+    """The verified caller, derived from a Supabase Auth JWT.
+
+    `role` is read from the profiles table, never from the token's own claims,
+    so a client cannot grant itself admin by crafting a JWT.
     """
-    return RuntimeError(
-        f"PostgreSQL {phase} failed (error type: {type(exc).__name__}). "
-        "DATABASE_URL is configured, so the application will NOT fall back "
-        "to SQLite; fix DATABASE_URL or the network and restart. "
-        "Connection details are omitted from this message on purpose."
-    )
+
+    __slots__ = ("user_id", "role")
+
+    def __init__(self, user_id: str, role: str) -> None:
+        self.user_id = user_id
+        self.role = role
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
 
 
-def _ensure_pool(database_url: str) -> ConnectionPool:
-    """Return the process-wide PostgreSQL pool, creating (and testing) it once.
-
-    Any failure to open the pool or reach the server raises a sanitized
-    RuntimeError: no half-built pool is kept and there is no SQLite fallback.
-    """
-    global _pool, _pool_url
-    if _pool is not None:
-        if _pool_url == database_url:
-            return _pool
-        close_pool()                      # URL changed (e.g. between tests)
-
-    try:
-        pool = ConnectionPool(
-            conninfo=database_url,
+def get_pool(database_url: str) -> ConnectionPool:
+    """Build (once) the shared connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(
+            database_url,
             min_size=POOL_MIN_SIZE,
             max_size=POOL_MAX_SIZE,
-            # row_factory -> rows behave like dicts, matching sqlite3.Row.
-            kwargs={"row_factory": dict_row},
+            open=False,
+            kwargs={"row_factory": dict_row, "autocommit": True},
         )
-    except Exception as exc:              # malformed URL, bad setup, etc.
-        raise _pg_error(exc, "connection") from None
-
-    try:
-        with pool.connection() as conn:
-            conn.execute("SELECT 1")      # proves the server is reachable
-    except Exception as exc:
-        try:
-            pool.close()                  # never leave a half-built pool behind
-        except Exception:
-            pass
-        raise _pg_error(exc, "connection") from None
-
-    _pool = pool
-    _pool_url = database_url
-    return pool
+        _pool.open()
+    return _pool
 
 
 def close_pool() -> None:
-    """Close the PostgreSQL pool if one is open. No-op in SQLite mode."""
-    global _pool, _pool_url
+    """Close the pool on shutdown."""
+    global _pool
     if _pool is not None:
-        try:
-            _pool.close()
-        finally:
-            _pool = None
-            _pool_url = None
-
-
-# ---------------------------------------------------------------------------
-# Connection handling
-# ---------------------------------------------------------------------------
-def get_connection(db_path: Optional[Union[str, Path]] = None) -> sqlite3.Connection:
-    """Open a SQLite connection with sane defaults.
-
-    * ``row_factory = sqlite3.Row`` -> rows behave like dictionaries.
-    * WAL journal mode -> readers are not blocked by the single writer.
-    * ``busy_timeout`` -> wait (rather than fail) if the file is briefly locked.
-    """
-    path = Path(db_path) if db_path is not None else DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+        _pool.close()
+        _pool = None
 
 
 @contextmanager
-def connection(
-    db_path: Optional[Union[str, Path]] = None,
-    *,
-    database_url: Optional[str] = None,
-) -> Iterator[Any]:
-    """Context manager: yields a connection, commits on success, always closes.
-
-    SQLite (the default): opens a fresh connection, commits on a clean exit,
-    rolls back if an exception escapes, and closes in all cases - unchanged.
-
-    PostgreSQL (``database_url`` set): lends a pooled connection; psycopg-pool
-    commits on success, rolls back on error and returns it to the pool.
-    Connection-level failures are re-raised as sanitized errors (the URL and
-    its credentials are never exposed).
-    """
-    if database_url:
-        pool = _ensure_pool(database_url)
-        try:
-            with pool.connection() as conn:
-                yield conn
-        except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
-            raise _pg_error(exc, "operation") from None
-        return
-
-    conn = get_connection(db_path)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _execute(conn: Any, sql: str, params: Any) -> Any:
-    """Run ``sql`` with ``params`` on either backend.
-
-    SQL text in this module always uses ``?`` placeholders (never present in
-    the validated fragments it is built from), so PostgreSQL execution simply
-    swaps them for its own ``%s`` marker; SQLite executes the text verbatim.
-
-    PostgreSQL runs with ``prepare=False``. psycopg would otherwise turn every
-    parameterized query into a server-side prepared statement (``_pg3_0``, ...),
-    and prepared statements belong to a *session*. Supabase's Transaction
-    Pooler may hand the same session a different PostgreSQL backend between
-    transactions, so a statement can then be missing ("prepared statement does
-    not exist") or already present ("already exists"). Unnamed statements are
-    immune to that; the SQL, parameters and row factory are unchanged.
-
-    ``sqlite3.Connection.execute`` has no ``prepare`` parameter, so the flag is
-    deliberately applied to the PostgreSQL branch only.
-    """
-    if isinstance(conn, sqlite3.Connection):
-        return conn.execute(sql, params)
-    return conn.execute(sql.replace("?", "%s"), params, prepare=False)
-
-
-def init_db(
-    db_path: Optional[Union[str, Path]] = None,
-    *,
-    database_url: Optional[str] = None,
-) -> Path:
-    """Create the database file/tables if they do not exist yet.
-
-    Idempotent - safe to call on every application start.
-
-    * No ``database_url``: applies ``schema.sql`` to SQLite, exactly as before.
-    * ``database_url`` set: applies ``schema_postgres.sql`` to PostgreSQL.
-      Connection or statement failures propagate - startup fails loudly and
-      never falls back to SQLite.
-
-    Returns the path of the SQLite database that was initialized; in
-    PostgreSQL mode there is no file, so the (unused) local default path is
-    returned to keep the signature stable.
-    """
-    if database_url:
-        _init_postgres(database_url)
-        return Path(db_path) if db_path is not None else DB_PATH
-
-    if not SCHEMA_PATH.is_file():
-        raise FileNotFoundError(f"schema.sql not found at {SCHEMA_PATH}")
-
-    schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    with connection(db_path) as conn:
-        conn.executescript(schema_sql)
-
-    return Path(db_path) if db_path is not None else DB_PATH
-
-
-def _init_postgres(database_url: str) -> None:
-    """Apply schema_postgres.sql to PostgreSQL. Idempotent, fails loudly."""
-    if not PG_SCHEMA_PATH.is_file():
-        raise FileNotFoundError(f"schema_postgres.sql not found at {PG_SCHEMA_PATH}")
-    statements = _split_ddl(PG_SCHEMA_PATH.read_text(encoding="utf-8"))
-    pool = _ensure_pool(database_url)      # validates reachability first
+def session(database_url: str, identity: Identity) -> Iterator[Any]:
+    """Open a transaction acting AS the verified caller, so RLS applies."""
+    pool = get_pool(database_url)
     try:
         with pool.connection() as conn:
-            for statement in statements:
-                conn.execute(statement)
-    except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
-        raise _pg_error(exc, "initialization") from None
+            previous_autocommit = conn.autocommit
+            conn.autocommit = False
+            try:
+                claims = json.dumps({"sub": str(identity.user_id), "role": identity.role})
+                conn.execute("SET LOCAL ROLE authenticated")
+                # set_config() takes a real bind parameter; a bare
+                # `SET ... = %s` does NOT, because psycopg3 turns %s into $1 and
+                # PostgreSQL rejects bind parameters in SET statements
+                # (syntax error at or near "$1"). `true` makes it transaction
+                # scoped, exactly like SET LOCAL.
+                conn.execute(
+                    "SELECT set_config('request.jwt.claims', %s, true)", (claims,)
+                )
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = previous_autocommit
+    except psycopg.Error as exc:
+        logger.error("database error (%s)", type(exc).__name__)
+        raise DatabaseError("Database operation failed.") from None
 
 
-def _split_ddl(sql_text: str) -> list[str]:
-    """Split a simple DDL script into individual statements.
+def load_role(conn: Any, user_id: str) -> Optional[str]:
+    """Role for a user id, read from profiles (migrations 001/012)."""
+    row = conn.execute(
+        "SELECT role FROM public.profiles WHERE id = %s", (user_id,)
+    ).fetchone()
+    return row["role"] if row else None
 
-    Used only for schema_postgres.sql, which contains no functions, dollar
-    quoting, or semicolons inside string literals - so stripping ``--``
-    comments and splitting on ``;`` is exact.
+
+def load_profile(conn: Any, user_id: str) -> Optional[dict[str, Any]]:
+    """The caller's own profile row.
+
+    Returns the row only for the caller themselves - the id is matched exactly,
+    and RLS restricts this to the row the caller owns. Returns None when there
+    is no profiles row, which normally means the signup trigger (migration 012)
+    has not created one yet.
+
+    Only non-sensitive fields are selected: id, email, full_name, role and the
+    creation timestamp. No password material, no auth.users columns, no tokens.
     """
-    without_comments = "\n".join(
-        line.split("--", 1)[0] for line in sql_text.splitlines()
-    )
-    return [stmt.strip() for stmt in without_comments.split(";") if stmt.strip()]
+    row = conn.execute(
+        """
+        SELECT id, email, full_name, role, created_at
+          FROM public.profiles
+         WHERE id = %s
+        """,
+        (user_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
-# Small validation / conversion helpers
-# ---------------------------------------------------------------------------
-def _require_text(value: Any, field: str, max_length: int = 2000) -> str:
-    """Ensure a required text field is a non-empty string, and trim it."""
-    if value is None or not isinstance(value, str) or not value.strip():
-        raise ValueError(f"'{field}' is required and must be a non-empty string")
-    cleaned = value.strip()
-    if len(cleaned) > max_length:
-        raise ValueError(f"'{field}' is too long ({len(cleaned)} chars, max {max_length})")
-    return cleaned
-
-
-def _optional_text(value: Any, field: str, max_length: int = 4000) -> Optional[str]:
-    """Normalize an optional text field. Empty string / None both become None."""
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"'{field}' must be a string when provided")
-    cleaned = value.strip()
-    if not cleaned:
-        return None
-    if len(cleaned) > max_length:
-        raise ValueError(f"'{field}' is too long ({len(cleaned)} chars, max {max_length})")
-    return cleaned
-
-
-def _validate_level(value: Any, field: str) -> Optional[str]:
-    """Allow None or exactly one of Low/Medium/High (case-insensitive in, canonical out)."""
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        return None
-    cleaned = value.strip().title()          # 'high' / 'HIGH' -> 'High'
-    if cleaned not in ALLOWED_LEVELS:
-        raise ValueError(f"'{field}' must be one of {list(ALLOWED_LEVELS)}, got {value!r}")
-    return cleaned
-
-
-def _validate_status(value: Any, field: str = "status") -> str:
-    """Ensure a status is one of the three allowed values (exact match)."""
-    if not isinstance(value, str) or value not in ALLOWED_STATUSES:
-        raise ValueError(f"'{field}' must be one of {list(ALLOWED_STATUSES)}, got {value!r}")
-    return value
-
-
-def _validate_priority_score(value: Any) -> Optional[float]:
-    """Allow None or a number, clamped to 0-100."""
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("'priority_score' must be a number when provided")
-    return max(0.0, min(100.0, float(value)))
-
-
-def _serialize_breakdown(value: Any) -> Optional[str]:
-    """Accept a dict or a JSON string; always store a JSON string (or None)."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        try:                                  # must already be valid JSON
-            json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"'score_breakdown' string is not valid JSON: {exc}") from exc
-        return value
-    if isinstance(value, dict):
-        return json.dumps(value, separators=(",", ":"))
-    raise ValueError("'score_breakdown' must be a dict, a JSON string, or None")
-
-
-def _row_to_complaint(row: Optional[Any]) -> Optional[dict[str, Any]]:
-    """Convert a database row (sqlite3.Row or psycopg dict row) into a plain dict.
-
-    score_breakdown is stored as TEXT but returned as a dict (when it parses),
-    because that is what the API and the dashboard want to render.
-    """
-    if row is None:
-        return None
-
-    complaint = dict(row)
-    raw = complaint.get("score_breakdown")
-    if raw is None:
-        complaint["score_breakdown"] = None
-    else:
-        try:
-            complaint["score_breakdown"] = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            complaint["score_breakdown"] = raw      # hand back whatever is stored
-    return complaint
-
-
-# ---------------------------------------------------------------------------
-# Create
+# Complaints
 # ---------------------------------------------------------------------------
 def create_complaint(
+    conn: Any,
     *,
+    student_id: str,
     description: str,
-    location: str,
-    image_path: Optional[str] = None,
-    category: Optional[str] = None,
-    issue_summary: Optional[str] = None,
-    safety_risk: Optional[str] = None,
-    functional_impact: Optional[str] = None,
-    urgency: Optional[str] = None,
-    evidence_from_image: Optional[str] = None,
-    uncertainty_or_missing_information: Optional[str] = None,
-    priority_score: Optional[float] = None,
-    score_breakdown: Optional[Union[dict[str, Any], str]] = None,
-    status: str = STATUS_REPORTED,
-    db_path: Optional[Union[str, Path]] = None,
-    database_url: Optional[str] = None,
+    location_raw: str,
+    location_code: Optional[str],
+    image_path: Optional[str],
 ) -> dict[str, Any]:
-    """Insert one complaint and return it as a dict (including its new id).
+    """Insert one complaint and return it.
 
-    Only ``description`` and ``location`` are mandatory. The AI-derived fields
-    are optional so a complaint can still be recorded when analysis fails.
+    The AI columns and every score column are left NULL: a submission is never
+    blocked on, or influenced by, an AI provider.
     """
-    description = _require_text(description, "description")
-    location = _require_text(location, "location", max_length=300)
-    image_path = _optional_text(image_path, "image_path", max_length=500)
-    category = _optional_text(category, "category", max_length=100)
-    issue_summary = _optional_text(issue_summary, "issue_summary")
-    safety_risk = _validate_level(safety_risk, "safety_risk")
-    functional_impact = _validate_level(functional_impact, "functional_impact")
-    urgency = _validate_level(urgency, "urgency")
-    evidence_from_image = _optional_text(evidence_from_image, "evidence_from_image")
-    uncertainty_or_missing_information = _optional_text(
-        uncertainty_or_missing_information, "uncertainty_or_missing_information"
-    )
-    priority_score = _validate_priority_score(priority_score)
-    score_breakdown_json = _serialize_breakdown(score_breakdown)
-    status = _validate_status(status)
+    row = conn.execute(
+        f"""
+        INSERT INTO public.complaints
+            (student_id, description, location_raw, location_code, image_path)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING {_SELECT_LIST}
+        """,
+        (student_id, description, location_raw, location_code, image_path),
+    ).fetchone()
+    return dict(row)
 
-    now_expr = _PG_NOW if database_url else _SQLITE_NOW
-    sql = f"""
-        INSERT INTO complaints (
-            description, location, image_path, category, issue_summary,
-            safety_risk, functional_impact, urgency, evidence_from_image,
-            uncertainty_or_missing_information, priority_score, score_breakdown,
-            status, resolved_at
-        ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            CASE WHEN ? = 'Resolved' THEN {now_expr} ELSE NULL END
-        )
-    """
-    params = (
-        description, location, image_path, category, issue_summary,
-        safety_risk, functional_impact, urgency, evidence_from_image,
-        uncertainty_or_missing_information, priority_score, score_breakdown_json,
-        status, status,                      # 2nd 'status' feeds the resolved_at CASE
+
+def record_created_event(conn: Any, complaint_id: str, actor_id: str, role: str) -> None:
+    """Append the 'created' audit row."""
+    conn.execute(
+        """
+        INSERT INTO public.complaint_events
+            (complaint_id, actor_id, actor_role, event_type, to_value)
+        VALUES (%s, %s, %s, 'created', 'Reported')
+        """,
+        (complaint_id, actor_id, role),
     )
 
-    with connection(db_path, database_url=database_url) as conn:
-        if database_url:
-            # PostgreSQL has no lastrowid; RETURNING gives the new id back.
-            cursor = _execute(conn, sql + " RETURNING id", params)
-            new_id = cursor.fetchone()["id"]
-        else:
-            cursor = conn.execute(sql, params)
-            new_id = cursor.lastrowid
 
-    created = get_complaint(new_id, db_path=db_path, database_url=database_url)
-    if created is None:                      # pragma: no cover - should never happen
-        raise RuntimeError(f"Complaint {new_id} was inserted but could not be read back")
-    return created
+def get_complaint(conn: Any, complaint_id: str) -> Optional[dict[str, Any]]:
+    """One complaint, as RLS allows the caller to see it.
 
-
-# ---------------------------------------------------------------------------
-# Read
-# ---------------------------------------------------------------------------
-def _validate_int(value: Any, field: str, *, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"'{field}' must be an integer")
-    if value < minimum:
-        raise ValueError(f"'{field}' must be >= {minimum}, got {value}")
-    return value
+    Returns None both when the row is absent and when RLS hides it, so a
+    student cannot probe for another student's complaint.
+    """
+    row = conn.execute(
+        f"SELECT {_SELECT_LIST} FROM public.complaints WHERE id = %s",
+        (complaint_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
-def get_complaint(
-    complaint_id: int,
-    *,
-    db_path: Optional[Union[str, Path]] = None,
-    database_url: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
-    """Fetch a single complaint by id. Returns None if it does not exist."""
-    complaint_id = _validate_int(complaint_id, "complaint_id", minimum=1)
+def delete_complaint(conn: Any, complaint_id: str) -> Optional[str]:
+    """Delete one complaint and return its image_path (or None).
 
-    sql = f"SELECT {_SELECT_COLUMNS} FROM complaints WHERE id = ?"
-    with connection(db_path, database_url=database_url) as conn:
-        row = _execute(conn, sql, (complaint_id,)).fetchone()
-    return _row_to_complaint(row)
+    RLS decides what may be deleted: complaints_own_delete for the owner,
+    complaints_admin_all for an admin. Child rows (scores, jobs, events, notes,
+    public copies) cascade in PostgreSQL. The returned image_path lets the
+    caller remove the stored object best-effort.
+    """
+    row = conn.execute(
+        """
+        DELETE FROM public.complaints
+         WHERE id = %s
+         RETURNING image_path
+        """,
+        (complaint_id,),
+    ).fetchone()
+    return row["image_path"] if row else None
+
+
+def community_overview(conn: Any, limit: int = 500) -> list[dict[str, Any]]:
+    """Sanitized campus-wide feed via the migration-016 SECURITY DEFINER fn.
+
+    Contains ONLY id/location/status/band/ai_category/created_at - never a
+    reporter identity, description text or a numeric score.
+    """
+    rows = conn.execute(
+        "SELECT * FROM public.community_overview() LIMIT %s",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_complaints(
+    conn: Any,
     *,
+    student_id: Optional[str] = None,
     status: Optional[str] = None,
-    category: Optional[str] = None,
     sort: str = "priority",
-    limit: Optional[int] = None,
-    offset: Optional[int] = 0,
-    db_path: Optional[Union[str, Path]] = None,
-    database_url: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    band: Optional[str] = None,
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    open_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """List complaints, by default highest priority first.
+    """List complaints the caller may see.
 
-    Filters
-        status   : one of Reported / In Progress / Resolved (omit for all)
-        category : exact category match (omit for all)
-    Ordering
-        sort     : 'priority' (default), 'newest', or 'oldest'. Complaints with
-                   a NULL priority_score always sort last under 'priority',
-                   so un-analysed complaints never jump the queue.
-    Paging
-        limit / offset : omit `limit` to fetch everything.
+    `student_id` comes from the verified token, never from the request body or
+    query string. The triage filters (band/category/q/open_only) are admin
+    conveniences applied on top of the same RLS-visible set - they can only
+    narrow what the policies already allow.
     """
+    if status is not None and status not in scoring.STATUSES:
+        raise ValueError(f"status must be one of {list(scoring.STATUSES)}")
+    if sort not in {"priority", "newest", "oldest"}:
+        raise ValueError("sort must be priority, newest or oldest")
+    if band is not None and band not in (*scoring.BANDS, "Unscored"):
+        raise ValueError(
+            f"band must be one of {list(scoring.BANDS)} or 'Unscored'"
+        )
+
+    # NULLS LAST keeps Unscored (NULL) rows below every real score, including 0.
+    order = {
+        "priority": "priority_score DESC NULLS LAST, created_at DESC",
+        "newest": "created_at DESC",
+        "oldest": "created_at ASC",
+    }[sort]
+
     clauses: list[str] = []
     params: list[Any] = []
-
+    if student_id is not None:
+        clauses.append("student_id = %s")
+        params.append(student_id)
     if status is not None:
-        clauses.append("status = ?")
-        params.append(_validate_status(status))
-
+        clauses.append("status = %s")
+        params.append(status)
+    if band is not None:
+        clauses.append(f"({_BAND_CASE_SQL}) = %s")
+        params.append(band)
     if category is not None:
-        cleaned = _optional_text(category, "category", max_length=100)
-        if cleaned:
-            clauses.append("category = ?")
-            params.append(cleaned)
+        clauses.append("ai_category = %s")
+        params.append(category)
+    if q:
+        clauses.append(
+            "(description ILIKE %s OR location_raw ILIKE %s OR id::text ILIKE %s)"
+        )
+        like = f"%{q}%"
+        params.extend([like, like, like])
+    if open_only:
+        clauses.append("status <> 'Resolved'")
 
-    # `sort` is a dict lookup, never string-formatted into the SQL itself.
-    if sort not in _ALLOWED_SORTS:
-        raise ValueError(f"'sort' must be one of {sorted(_ALLOWED_SORTS)}, got {sort!r}")
-    order_by = _ALLOWED_SORTS[sort]
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
 
-    sql = f"SELECT {_SELECT_COLUMNS} FROM complaints"
-    if clauses:
-        sql += " WHERE " + " AND ".join(clauses)
-    sql += f" ORDER BY {order_by}"
-
-    if limit is not None or (offset or 0) > 0:
-        clean_limit = None if limit is None else _validate_int(limit, "limit")
-        clean_offset = _validate_int(offset or 0, "offset")
-        if database_url:
-            # PostgreSQL rejects LIMIT -1; OFFSET alone means "no limit".
-            if clean_limit is not None:
-                sql += " LIMIT ? OFFSET ?"
-                params.extend([clean_limit, clean_offset])
-            else:
-                sql += " OFFSET ?"
-                params.append(clean_offset)
-        else:
-            # SQLite needs a LIMIT before it will accept an OFFSET; -1 means "no limit".
-            sql += " LIMIT ? OFFSET ?"
-            params.extend([-1 if clean_limit is None else clean_limit, clean_offset])
-
-    with connection(db_path, database_url=database_url) as conn:
-        rows = _execute(conn, sql, params).fetchall()
-    return [_row_to_complaint(row) for row in rows]
+    rows = conn.execute(
+        f"""
+        SELECT {_SELECT_LIST}
+        FROM public.complaints
+        {where}
+        ORDER BY {order}
+        LIMIT %s OFFSET %s
+        """,
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
-# ---------------------------------------------------------------------------
-# Update
-# ---------------------------------------------------------------------------
-def update_complaint_status(
-    complaint_id: int,
-    status: str,
-    *,
-    db_path: Optional[Union[str, Path]] = None,
-    database_url: Optional[str] = None,
+def list_events(conn: Any, complaint_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """The append-only audit trail for one complaint, newest first.
+
+    The profiles join is cosmetic (actor email for the admin UI) and is allowed
+    by the profiles_admin_all RLS policy; authorisation comes from the caller
+    being an admin, enforced upstream.
+    """
+    rows = conn.execute(
+        """
+        SELECT e.id, e.actor_role, e.event_type, e.from_value, e.to_value,
+               e.created_at, p.email AS actor_email
+          FROM public.complaint_events e
+          LEFT JOIN public.profiles p ON p.id = e.actor_id
+         WHERE e.complaint_id = %s
+         ORDER BY e.created_at DESC, e.id DESC
+         LIMIT %s
+        """,
+        (complaint_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_notes(conn: Any, complaint_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Internal investigation notes for one complaint, newest first."""
+    rows = conn.execute(
+        """
+        SELECT n.id, n.body, n.author_kind, n.created_at,
+               p.email AS author_email
+          FROM public.investigation_notes n
+          LEFT JOIN public.profiles p ON p.id = n.author_id
+         WHERE n.complaint_id = %s
+         ORDER BY n.created_at DESC, n.id DESC
+         LIMIT %s
+        """,
+        (complaint_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_note(
+    conn: Any, complaint_id: str, *, author_id: str, body: str
 ) -> Optional[dict[str, Any]]:
-    """Change a complaint's status. Returns the updated complaint, or None if unknown.
+    """Insert one admin note and append a 'note_added' audit event.
 
-    Side effects:
-        updated_at  -> always set to the current UTC time
-        resolved_at -> set when moving INTO 'Resolved', cleared when moving out
+    The event's to_value stays NULL: complaint_events is readable by the
+    complaint's student, so note content must never be copied there.
     """
-    complaint_id = _validate_int(complaint_id, "complaint_id", minimum=1)
-    status = _validate_status(status)
+    row = conn.execute(
+        """
+        INSERT INTO public.investigation_notes
+            (complaint_id, author_id, author_kind, body)
+        VALUES (%s, %s, 'admin', %s)
+        RETURNING id, body, author_kind, created_at
+        """,
+        (complaint_id, author_id, body),
+    ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO public.complaint_events
+            (complaint_id, actor_id, actor_role, event_type, to_value)
+        VALUES (%s, %s, 'admin', 'note_added', NULL)
+        """,
+        (complaint_id, author_id),
+    )
+    return dict(row) if row else None
 
-    now_expr = _PG_NOW if database_url else _SQLITE_NOW
-    sql = f"""
-        UPDATE complaints
-           SET status      = ?,
-               updated_at  = {now_expr},
-               resolved_at = CASE WHEN ? = 'Resolved' THEN {now_expr} ELSE NULL END
-         WHERE id = ?
-    """
-    with connection(db_path, database_url=database_url) as conn:
-        cursor = _execute(conn, sql, (status, status, complaint_id))
-        if cursor.rowcount == 0:
-            return None                      # no such complaint
 
-    return get_complaint(complaint_id, db_path=db_path, database_url=database_url)
+def update_status(
+    conn: Any, complaint_id: str, new_status: str
+) -> Optional[dict[str, Any]]:
+    """Move a complaint between the three allowed statuses."""
+    if new_status not in scoring.STATUSES:
+        raise ValueError(f"status must be one of {list(scoring.STATUSES)}")
+
+    row = conn.execute(
+        f"""
+        UPDATE public.complaints
+           SET status = %s,
+               resolved_at = CASE WHEN %s = 'Resolved' THEN now() ELSE resolved_at END
+         WHERE id = %s
+        RETURNING {_SELECT_LIST}
+        """,
+        (new_status, new_status, complaint_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def record_status_event(
+    conn: Any,
+    complaint_id: str,
+    actor_id: str,
+    role: str,
+    previous: Optional[str],
+    new: str,
+) -> None:
+    """Append a status_changed audit row."""
+    conn.execute(
+        """
+        INSERT INTO public.complaint_events
+            (complaint_id, actor_id, actor_role, event_type, from_value, to_value)
+        VALUES (%s, %s, %s, 'status_changed', %s, %s)
+        """,
+        (complaint_id, actor_id, role, previous, new),
+    )
+
+
+def confirm_analysis(
+    conn: Any,
+    complaint_id: str,
+    *,
+    urgency: str,
+    impact: str,
+    safety: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Store admin-confirmed levels. This is the only way a score is produced."""
+    row = conn.execute(
+        f"""
+        UPDATE public.complaints
+           SET confirmed_urgency = %s,
+               confirmed_impact  = %s,
+               confirmed_safety  = %s,
+               analysis_confirmed_at = now(),
+               confirmed_by = %s
+         WHERE id = %s
+        RETURNING {_SELECT_LIST}
+        """,
+        (urgency, impact, safety, actor_id, complaint_id),
+    ).fetchone()
+    if row is None:
+        raise DatabaseError("Complaint not found.")
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------
-# Manual use:  backend\venv\Scripts\python.exe backend\app\database.py
-# Creates the database file and tables, then prints where they live.
+# Recurrence (D5) - ONE snapshot per request so rows never disagree
 # ---------------------------------------------------------------------------
-def _main() -> int:
-    path = init_db()
-    print("CampusLens database ready")
-    print(f"  file  : {path}")
-    print(f"  schema: {SCHEMA_PATH}")
-    if (os.environ.get("DATABASE_URL") or "").strip():
-        print("  note  : DATABASE_URL is set - PostgreSQL is initialized when")
-        print("          the app starts, not by this SQLite-only CLI.")
-    with connection() as conn:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall()
-        names = [r["name"] for r in rows if not r["name"].startswith("sqlite_")]
-        count = conn.execute("SELECT COUNT(*) AS n FROM complaints").fetchone()["n"]
-    print(f"  tables: {', '.join(names)}")
-    print(f"  rows  : {count}")
-    return 0
+def recurrence_snapshot(
+    conn: Any, *, location_code: Optional[str], exclude_id: Optional[str] = None
+) -> int:
+    """Count prior similar complaints in the 90-day window.
+
+    A NULL location_code means recurrence is not applicable (D10), so the count
+    is 0. Callers compute this ONCE per response and reuse it, so two
+    complaints in the same group always receive the same number.
+    """
+    if location_code is None:
+        return 0
+    row = conn.execute(
+        """
+        SELECT count(*) AS n
+          FROM public.complaints
+         WHERE location_code = %s
+           AND created_at >= now() - make_interval(days => %s)
+           AND (%s::uuid IS NULL OR id <> %s::uuid)
+        """,
+        (location_code, scoring.RECURRENCE_WINDOW_DAYS, exclude_id, exclude_id),
+    ).fetchone()
+    return int(row["n"]) if row else 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(_main())
+def save_score(
+    conn: Any,
+    complaint_id: str,
+    *,
+    score: float,
+    breakdown: dict[str, Any],
+    band: str,
+    actor_id: str,
+) -> None:
+    """Persist a computed score and append one history row (D9)."""
+    conn.execute(
+        """
+        UPDATE public.complaints
+           SET priority_score = %s, score_breakdown = %s,
+               score_computed_at = now()
+         WHERE id = %s
+        """,
+        (score, json.dumps(breakdown), complaint_id),
+    )
+    age = breakdown.get("age", {}) or {}
+    recurrence = breakdown.get("recurrence", {}) or {}
+    conn.execute(
+        """
+        INSERT INTO public.complaint_scores
+            (complaint_id, age_days, recurrence_count, score, band, band_raw,
+             safety_floor_applied, trigger_reason)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'admin_confirm')
+        """,
+        (
+            complaint_id,
+            int(age.get("days", 0)),
+            int(recurrence.get("count", 0)),
+            score,
+            band,
+            str(breakdown.get("band_raw", band)),
+            bool(breakdown.get("safety_floor_applied", False)),
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO public.complaint_events
+            (complaint_id, actor_id, actor_role, event_type, to_value)
+        VALUES (%s, %s, 'admin', 'analysis_confirmed', %s)
+        """,
+        (complaint_id, actor_id, band),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AI jobs (optional enrichment; never required for a complaint to exist)
+# ---------------------------------------------------------------------------
+# The seven AI columns, in the exact parameter order of migration 014's
+# store_ai_suggestion(). Scores and status are deliberately absent.
+AI_SUGGESTION_COLUMNS: tuple[str, ...] = (
+    "ai_category", "ai_summary", "ai_evidence", "ai_uncertainty",
+    "ai_urgency", "ai_impact", "ai_safety",
+)
+
+
+def enqueue_analysis_job(conn: Any, complaint_id: str) -> None:
+    """Create the optional AI job. Never raises for a missing provider."""
+    conn.execute(
+        """
+        INSERT INTO public.analysis_jobs (complaint_id, status)
+        VALUES (%s, 'pending')
+        ON CONFLICT DO NOTHING
+        """,
+        (complaint_id,),
+    )
+
+
+def store_ai_suggestion(conn: Any, complaint_id: str, suggestion: dict) -> None:
+    """Persist the AI suggestion through migration 014's SECURITY DEFINER
+    function, which writes ONLY the seven ai_* columns of one row.
+
+    The old raw `UPDATE ... SET ai_*` ran as Identity(complaint_id, "system"),
+    a session that satisfies no UPDATE policy on complaints: PostgreSQL
+    silently filtered the statement to zero rows, so the admin card's
+    "Full AI assessment" always showed "Not provided". The function has no
+    parameters for priority_score, status or anything else, so elevation can
+    never become a scoring backdoor.
+    """
+    values = tuple(suggestion.get(column) for column in AI_SUGGESTION_COLUMNS)
+    placeholders = ", ".join(["%s"] * (len(AI_SUGGESTION_COLUMNS) + 1))
+    conn.execute(
+        f"SELECT public.store_ai_suggestion({placeholders})",
+        (complaint_id, *values),
+    )
+
+
+def record_job_failure(conn: Any, complaint_id: str, error: str, attempts: int) -> None:
+    """Record an AI failure. The complaint itself is never touched.
+
+    Delegates to migration 014's SECURITY DEFINER function: the system
+    session (sub = complaint id) has no INSERT/UPDATE policy on
+    analysis_jobs, so the raw upsert used to raise 42501 and the failure was
+    silently lost.
+    """
+    conn.execute(
+        "SELECT public.record_job_failure(%s, %s, %s)",
+        (complaint_id, attempts, error[:500]),
+    )
+
+
+def store_auto_score(conn: Any, complaint_id: str, actor_id: Optional[str]) -> None:
+    """Score a complaint automatically from its own stored ai_* levels.
+
+    Delegates to migration 015's SECURITY DEFINER function. The system
+    session (sub = complaint id) satisfies no UPDATE policy on complaints, so
+    the function - like store_ai_suggestion - is elevated and bypasses RLS to
+    write the score, the score_breakdown, the complaint_scores history row and
+    one audit event. It reads ONLY the row's ai_urgency/ai_impact/ai_safety;
+    there is no parameter for levels or a score, so this can never be fed a
+    number from the caller.
+
+    The function never raises and never re-scores an already-scored row, so a
+    second call (e.g. an AI re-run) is a harmless no-op. Best-effort: any error
+    is swallowed here so a scoring hiccup can never fail a submission whose
+    complaint and suggestion are already committed.
+    """
+    try:
+        conn.execute(
+            "SELECT public.store_auto_score(%s, %s)",
+            (complaint_id, actor_id),
+        )
+    except Exception:
+        logger.warning("could not compute automatic score for %s", complaint_id)
+
+
+# ---------------------------------------------------------------------------
+# Public feed (no authentication; only approved rows)
+# ---------------------------------------------------------------------------
+def approve_for_public(
+    conn: Any,
+    complaint_id: str,
+    *,
+    public_summary: str,
+    public_category: str,
+    public_location: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Publish (or re-publish) one complaint to the community feed.
+
+    This is the ONLY write path into public_complaints, and it is reachable
+    only from an admin-only route. approved_at is set explicitly here - it is
+    never defaulted - so a row is public because an admin decided, not because
+    it was inserted.
+
+    The caller supplies sanitized text. Nothing is copied from the complaint, so
+    the reporter's own words and identity can never leak by accident.
+    """
+    row = conn.execute(
+        """
+        INSERT INTO public.public_complaints
+            (source_complaint_id, public_summary, public_category,
+             public_location, approved_by, approved_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (source_complaint_id) DO UPDATE
+            SET public_summary  = EXCLUDED.public_summary,
+                public_category = EXCLUDED.public_category,
+                public_location = EXCLUDED.public_location,
+                approved_by     = EXCLUDED.approved_by,
+                approved_at     = EXCLUDED.approved_at
+        RETURNING id, public_summary, public_category, public_location,
+                  status, approved_at
+        """,
+        (complaint_id, public_summary, public_category, public_location, actor_id),
+    ).fetchone()
+    if row is None:
+        raise DatabaseError("Complaint not found.")
+    return dict(row)
+
+
+def revoke_public_approval(conn: Any, complaint_id: str) -> bool:
+    """Withdraw a complaint from the public feed.
+
+    The row is kept but approved_at is cleared, so it becomes a draft again and
+    the public policy hides it. Returning False means nothing was published.
+    """
+    row = conn.execute(
+        """
+        UPDATE public.public_complaints
+           SET approved_at = NULL, approved_by = NULL
+         WHERE source_complaint_id = %s
+        RETURNING id
+        """,
+        (complaint_id,),
+    ).fetchone()
+    return row is not None
+
+
+def get_public_entry(conn: Any, complaint_id: str) -> Optional[dict[str, Any]]:
+    """The published entry for a complaint, or None if it is not published."""
+    row = conn.execute(
+        """
+        SELECT id, public_summary, public_category, public_location,
+               status, approved_at
+          FROM public.public_complaints
+         WHERE source_complaint_id = %s
+        """,
+        (complaint_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_public_complaints(
+    conn: Any, *, limit: int = 50, offset: int = 0, category: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """Approved, sanitized complaints only.
+
+    Reads public_complaints, which physically has no student_id, no score and
+    no free-text description, so nothing private can leak from here.
+    """
+    if category:
+        rows = conn.execute(
+            f"""
+            SELECT {_PUBLIC_SELECT_LIST}
+              FROM public.public_complaints
+             WHERE public_category = %s
+             ORDER BY approved_at DESC
+             LIMIT %s OFFSET %s
+            """,
+            (category, limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT {_PUBLIC_SELECT_LIST}
+              FROM public.public_complaints
+             ORDER BY approved_at DESC
+             LIMIT %s OFFSET %s
+            """,
+            (limit, offset),
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -1,3 +1,1 @@
-"""Tests for the CampusLens backend package."""
-
-__all__ = []
+"""CampusLens backend tests."""

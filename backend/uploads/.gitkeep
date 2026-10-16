@@ -1,2 +1,0 @@
-# Keeps the uploads/ folder in version control while it is empty.
-# Uploaded complaint images land here and are ignored by .gitignore.

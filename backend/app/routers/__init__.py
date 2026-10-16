@@ -1,3 +1,5 @@
-"""FastAPI route modules for the CampusLens API."""
+"""CampusLens API routers."""
 
-__all__ = ["analytics", "complaints"]
+from . import complaints
+
+__all__ = ["complaints"]

@@ -1,7 +1,11 @@
-"""CampusLens backend application package.
+"""
+CampusLens API backend.
 
-Contains the database layer (``database``), and later the priority scorer,
-Gemini integration and FastAPI routers.
+Supabase PostgreSQL only. Every request is authenticated against a Supabase
+Auth JWT, and the request's role is derived from the verified token - never
+from anything the client sent.
 """
 
-__all__ = ["database"]
+__all__ = ["__version__"]
+
+__version__ = "2.0.0"
