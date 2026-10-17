@@ -20,7 +20,7 @@ from typing import Any, Optional
 logger = logging.getLogger("campuslens.ai")
 
 REQUEST_TIMEOUT_SECONDS = 20.0
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 MODEL_ENV_VAR = "GEMINI_MODEL"
 API_KEY_ENV_VAR = "GEMINI_API_KEY"
@@ -113,6 +113,8 @@ def analyse(*, description: str, image_bytes: Optional[bytes] = None,
         raise AnalysisUnavailable("not_configured", "AI provider is not configured.")
 
     model = (os.environ.get(MODEL_ENV_VAR) or "").strip() or DEFAULT_MODEL
+    if model in {"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"}:
+        model = DEFAULT_MODEL
 
     prompt = (
         "You help a university facilities team triage student complaints. "
@@ -134,7 +136,13 @@ def analyse(*, description: str, image_bytes: Optional[bytes] = None,
         if image_bytes:
             mime = image_mime or "image/jpeg"
             parts.append({"inline_data": {"mime_type": mime, "data": image_bytes}})
-        response = client.models.generate_content(model=model, contents=parts)
+        try:
+            response = client.models.generate_content(model=model, contents=parts)
+        except Exception:
+            if model != DEFAULT_MODEL:
+                response = client.models.generate_content(model=DEFAULT_MODEL, contents=parts)
+            else:
+                raise
         text = getattr(response, "text", None) or ""
     except Exception as exc:
         # 503, timeouts, quota errors and anything else collapse into one
