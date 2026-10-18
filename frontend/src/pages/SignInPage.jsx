@@ -5,6 +5,28 @@ import { useAuth } from '../auth.jsx';
 import { ErrorBanner, Notice } from '../components/ui.jsx';
 import { IITKLogo, GoogleLogo, CampusLensIcon } from '../components/BrandIcons.jsx';
 
+// Authorized admin emails that can unlock the Faculty and Campus Administrator portals
+const AUTHORIZED_ADMIN_EMAILS = [
+  'yuvrajkrgupta87@gmail.com',
+  'admin@iitk.ac.in',
+  'campuslens.admin@gmail.com',
+  'director@iitk.ac.in',
+];
+
+export function isAuthorizedAdminEmail(emailStr) {
+  if (!emailStr) return false;
+  const clean = emailStr.trim().toLowerCase();
+  const configuredAdmin = (import.meta.env.VITE_ADMIN_EMAIL || '').trim().toLowerCase();
+  if (configuredAdmin && clean === configuredAdmin) return true;
+  return (
+    AUTHORIZED_ADMIN_EMAILS.includes(clean) ||
+    clean.startsWith('admin@') ||
+    clean.includes('admin') ||
+    clean.startsWith('director@') ||
+    clean.startsWith('dean@')
+  );
+}
+
 /**
  * Sign in / sign up page with clean, non-overlapping IIT Kanpur campus imagery.
  */
@@ -22,12 +44,28 @@ export default function SignInPage() {
   const [error, setError] = useState(null);
   const [info, setInfo] = useState(null);
 
+  const isStaffAdmin = isAuthorizedAdminEmail(email);
+
+  function handleEmailChange(e) {
+    const val = e.target.value;
+    setEmail(val);
+    if (!isAuthorizedAdminEmail(val) && role !== 'Student') {
+      setRole('Student');
+    }
+  }
+
   async function onSubmit(event) {
     event.preventDefault();
     if (busy || loading) return;
 
     if (!email.trim() || !password) {
       setError('Please enter your campus email address and password.');
+      return;
+    }
+
+    if (role !== 'Student' && !isAuthorizedAdminEmail(email)) {
+      setError('Access restricted: That email is not authorized for Faculty or Campus Administrator access. Please select Student.');
+      setRole('Student');
       return;
     }
 
@@ -216,6 +254,94 @@ export default function SignInPage() {
               </div>
             )}
 
+            {/* PORTAL ROLE SELECTION (Student, Faculty, Staff/Admin) */}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Select Portal Role
+                </span>
+                {!isStaffAdmin ? (
+                  <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <Lock className="w-3 h-3 text-amber-600" />
+                    Admin/Faculty Protected
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    Admin Authorized
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
+                {/* 1. Student */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRole('Student');
+                    setError(null);
+                  }}
+                  className={`py-2 px-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    role === 'Student'
+                      ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>Student</span>
+                </button>
+
+                {/* 2. Faculty */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isStaffAdmin) {
+                      setError('Access restricted: Faculty portal requires an authorized administrator or faculty email address.');
+                      setRole('Student');
+                    } else {
+                      setRole('Faculty / Staff');
+                      setError(null);
+                    }
+                  }}
+                  title={!isStaffAdmin ? 'Restricted to authorized administrator emails' : 'Faculty Access'}
+                  className={`py-2 px-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    role === 'Faculty / Staff' && isStaffAdmin
+                      ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
+                      : !isStaffAdmin
+                      ? 'text-slate-400 bg-slate-200/50 cursor-not-allowed opacity-75'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>Faculty</span>
+                  {!isStaffAdmin && <Lock className="w-3 h-3 text-slate-400" />}
+                </button>
+
+                {/* 3. Staff / Administrator */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isStaffAdmin) {
+                      setError('Access restricted: Campus Administrator portal requires an authorized administrator email.');
+                      setRole('Student');
+                    } else {
+                      setRole('Campus Administrator');
+                      setError(null);
+                    }
+                  }}
+                  title={!isStaffAdmin ? 'Restricted to authorized administrator emails' : 'Campus Administrator Access'}
+                  className={`py-2 px-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    role === 'Campus Administrator' && isStaffAdmin
+                      ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
+                      : !isStaffAdmin
+                      ? 'text-slate-400 bg-slate-200/50 cursor-not-allowed opacity-75'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="truncate">Admin / Staff</span>
+                  {!isStaffAdmin && <Lock className="w-3 h-3 text-slate-400" />}
+                </button>
+              </div>
+            </div>
+
             {/* CAMPUS EMAIL ADDRESS */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-700" htmlFor="email">
@@ -231,7 +357,7 @@ export default function SignInPage() {
                   value={email}
                   placeholder="e.g., yuvrajg@iitk.ac.in"
                   className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={handleEmailChange}
                   required
                 />
               </div>
@@ -253,12 +379,24 @@ export default function SignInPage() {
                   <select
                     id="role"
                     value={role}
-                    onChange={(e) => setRole(e.target.value)}
+                    onChange={(e) => {
+                      const newRole = e.target.value;
+                      if (newRole !== 'Student' && !isStaffAdmin) {
+                        setError('Access restricted: Faculty & Campus Administrator options are reserved for authorized administrator accounts.');
+                        setRole('Student');
+                      } else {
+                        setRole(newRole);
+                      }
+                    }}
                     className="w-full appearance-none px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow pr-10 cursor-pointer"
                   >
                     <option value="Student">Student</option>
-                    <option value="Faculty / Staff">Faculty / Staff</option>
-                    <option value="Campus Administrator">Campus Administrator</option>
+                    <option value="Faculty / Staff" disabled={!isStaffAdmin}>
+                      Faculty / Staff {!isStaffAdmin ? '(Restricted - Admin Only)' : ''}
+                    </option>
+                    <option value="Campus Administrator" disabled={!isStaffAdmin}>
+                      Campus Administrator {!isStaffAdmin ? '(Restricted - Admin Only)' : ''}
+                    </option>
                   </select>
                   <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400">
                     <ChevronDown className="w-4 h-4" />

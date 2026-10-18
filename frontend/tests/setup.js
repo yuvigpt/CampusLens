@@ -7,10 +7,15 @@
  */
 
 import { afterEach, beforeEach, vi } from 'vitest';
+import { cleanup } from '@testing-library/react';
 
 beforeEach(() => {
   global.fetch = vi.fn();
   vi.resetModules();
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 /** Build a Response-like object for the mocked fetch. */
