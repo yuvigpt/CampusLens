@@ -143,8 +143,8 @@ export default function SignInPage() {
               </span>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/15 text-xs text-slate-200 shadow-sm">
-            <img src="/iitk-seal.png" alt="IITK Seal" className="w-5 h-5 rounded-full object-contain" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/15 text-xs text-slate-200 shadow-sm">
+            <img src="/iitk-logo.svg" alt="IITK Seal" className="w-5 h-5 object-contain" />
             <span className="font-semibold">IIT Kanpur</span>
           </div>
         </div>
@@ -171,7 +171,7 @@ export default function SignInPage() {
 
         {/* Bottom: Powered by IIT Kanpur Banner */}
         <div className="relative z-10 flex items-center gap-3 pt-6 border-t border-white/15">
-          <img src="/iitk-seal.png" alt="IIT Kanpur Seal" className="w-9 h-9 object-contain drop-shadow" />
+          <img src="/iitk-logo.svg" alt="IIT Kanpur Seal" className="w-9 h-9 object-contain drop-shadow" />
           <div className="flex flex-col text-left">
             <span className="text-[11px] uppercase tracking-wider text-slate-300 font-medium">Powered by</span>
             <span className="text-sm font-semibold text-white tracking-tight">Indian Institute of Technology Kanpur</span>
@@ -184,22 +184,31 @@ export default function SignInPage() {
       {/* ============================================================ */}
       <div className="w-full lg:w-1/2 flex items-center justify-center p-6 sm:p-10 lg:p-14 bg-white overflow-y-auto">
         <div className="w-full max-w-md flex flex-col">
-          {/* Header Seal & Brand */}
-          <div className="flex items-center gap-3 mb-6">
-            <img src="/iitk-seal.png" alt="IITK Emblem" className="w-10 h-10 object-contain" />
-            <div className="h-6 w-px bg-slate-200" />
-            <div className="flex flex-col">
-              <span className="text-lg font-extrabold tracking-tight text-slate-900 leading-tight">CampusLens</span>
-              <span className="text-[11px] font-semibold text-slate-400">IIT Kanpur Portal</span>
+          {/* Header Seal & Brand (Perfect Center Alignment) */}
+          <div className="flex flex-col items-center justify-center text-center mb-6">
+            <div className="flex items-center justify-center gap-3 mb-2.5">
+              <img
+                src="/campuslens-icon.png"
+                alt="CampusLens Logo"
+                className="w-12 h-12 object-contain drop-shadow-sm"
+              />
+              <div className="h-7 w-px bg-slate-200" />
+              <img
+                src="/iitk-logo.svg"
+                alt="IIT Kanpur Seal"
+                className="w-11 h-11 object-contain drop-shadow-sm"
+              />
             </div>
+            <span className="text-xl font-black tracking-tight text-slate-900 leading-tight">CampusLens</span>
+            <span className="text-xs font-semibold text-slate-500">Indian Institute of Technology Kanpur</span>
           </div>
 
           {/* Form Title & Subtitle */}
-          <div className="mb-6">
+          <div className="mb-6 text-center">
             <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
               {mode === 'signup' ? 'Create an account' : 'Welcome back'}
             </h2>
-            <p className="text-sm text-slate-500 mt-1">
+            <p className="text-sm text-slate-500 mt-1 max-w-sm mx-auto">
               {mode === 'signup' 
                 ? 'Get started by signing up with your campus email address.' 
                 : 'Enter your campus credentials to access your student dashboard.'}

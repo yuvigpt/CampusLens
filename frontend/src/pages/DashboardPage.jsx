@@ -301,7 +301,7 @@ export default function DashboardPage({ view = 'overview', initialQuery = '' }) 
             </p>
           </div>
           <div className="flex items-center gap-2.5 bg-black/40 backdrop-blur-md px-3.5 py-2 rounded-xl border border-white/15 text-xs text-white">
-            <img src="/iitk-seal.png" alt="IITK Seal" className="w-6 h-6 object-contain" />
+            <img src="/iitk-logo.svg" alt="IITK Seal" className="w-6 h-6 object-contain" />
             <div className="flex flex-col">
               <span className="font-bold leading-tight">IIT Kanpur Operations</span>
               <span className="text-[10px] text-slate-300">Live triage feed</span>

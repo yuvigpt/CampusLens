@@ -103,6 +103,14 @@ export default function HomePage() {
         {/* Soft gradient veil for text contrast */}
         <div className="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-900/65 to-transparent" />
 
+        {/* Top Header Badge: Official IIT Kanpur Portal */}
+        <div className="relative z-10 flex items-center justify-between gap-3 mb-2">
+          <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/20 text-xs text-white shadow-sm">
+            <img src="/iitk-logo.svg" alt="IIT Kanpur Seal" className="w-5 h-5 object-contain shrink-0" />
+            <span className="font-semibold tracking-wide">IIT Kanpur Official Student Portal</span>
+          </div>
+        </div>
+
         {/* Hero Text */}
         <div className="relative z-10 max-w-xl">
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight text-white mb-2">

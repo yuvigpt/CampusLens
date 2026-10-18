@@ -2,16 +2,11 @@
 
 export function IITKLogo({ className = "w-8 h-8" }) {
   return (
-    <svg className={className} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="50" cy="50" r="46" stroke="currentColor" strokeWidth="3" />
-      <circle cx="50" cy="50" r="40" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" />
-      {/* Central Flame / Torch & Gears symbolic of IIT Kanpur emblem */}
-      <path d="M50 20 L53 32 L64 35 L55 42 L58 53 L50 46 L42 53 L45 42 L36 35 L47 32 Z" fill="currentColor" opacity="0.9" />
-      <circle cx="50" cy="62" r="14" stroke="currentColor" strokeWidth="2.5" />
-      <path d="M50 52 L50 72 M40 62 L60 62" stroke="currentColor" strokeWidth="2" />
-      <path d="M30 76 Q50 86 70 76" stroke="currentColor" strokeWidth="2.5" fill="none" />
-      <text x="50" y="88" textAnchor="middle" fontSize="6.5" fontWeight="bold" fill="currentColor" letterSpacing="0.8">IIT KANPUR</text>
-    </svg>
+    <img
+      src="/iitk-logo.svg"
+      alt="IIT Kanpur"
+      className={`object-contain shrink-0 ${className}`}
+    />
   );
 }
 
@@ -64,14 +59,20 @@ export function RobotAvatar({ className = "w-16 h-16" }) {
 
 export function CampusLensIcon({ className = "w-9 h-9" }) {
   return (
-    <div className={`relative flex items-center justify-center rounded-xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 shadow-md shadow-indigo-500/30 ${className}`}>
-      <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-white" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4 8V6a2 2 0 0 1 2-2h2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M4 16v2a2 2 0 0 0 2 2h2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M16 4h2a2 2 0 0 1 2 2v2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M16 20h2a2 2 0 0 0 2-2v-2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-        <circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="2.5"/>
-      </svg>
-    </div>
+    <img
+      src="/campuslens-icon.png"
+      alt="CampusLens"
+      className={`object-contain shrink-0 ${className}`}
+    />
+  );
+}
+
+export function CampusLensFullLogo({ className = "h-10 w-auto" }) {
+  return (
+    <img
+      src="/campuslens-logo.png"
+      alt="CampusLens"
+      className={`object-contain ${className}`}
+    />
   );
 }
