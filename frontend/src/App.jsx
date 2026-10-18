@@ -660,16 +660,12 @@ function Shell() {
                 onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
                 className="flex items-center gap-2 p-1 sm:pl-2 rounded-full hover:bg-slate-100 transition-colors text-left"
               >
-                <div className="w-8 h-8 rounded-full overflow-hidden border border-slate-200 shrink-0">
-                  <img
-                    src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80"
-                    alt="User Avatar"
-                    className="w-full h-full object-cover"
-                  />
+                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-xs flex items-center justify-center border border-indigo-200/50 shadow-sm shrink-0">
+                  {(userName || 'S').charAt(0).toUpperCase()}
                 </div>
                 <div className="hidden sm:flex flex-col">
                   <span className="text-xs font-bold text-slate-900 leading-tight">
-                    {isDashboard ? 'Operations Admin' : (userName || 'Yuvraj Gupta')}
+                    {isDashboard ? 'Operations Admin' : (userName || 'Student')}
                   </span>
                   <span className="text-[10px] text-slate-500 font-medium">
                     {isDashboard ? '(Support Team)' : (isAdmin ? 'Administrator' : 'Student')}

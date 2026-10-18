@@ -85,14 +85,35 @@ function authHeaders(token) {
 
 async function request(path, { token = null, ...options } = {}) {
   let response;
-  try {
-    response = await fetch(apiUrl(path), {
-      ...options,
-      headers: { ...authHeaders(token), ...(options.headers || {}) },
-    });
-  } catch {
+  const isTest = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  const maxRetries = isTest ? 0 : 2;
+
+  let lastFetchError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      response = await fetch(apiUrl(path), {
+        ...options,
+        headers: { ...authHeaders(token), ...(options.headers || {}) },
+      });
+      // If Render free tier returns 502/503/504 while waking up, retry
+      if ([502, 503, 504].includes(response.status) && attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      lastFetchError = null;
+      break;
+    } catch (err) {
+      lastFetchError = err;
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+    }
+  }
+
+  if (lastFetchError) {
     throw new ApiError(
-      `Cannot reach the CampusLens API at ${API_BASE}. Is the backend running?`,
+      'Cannot reach the CampusLens API (Error in backend service). The server may be waking up - please retry in a moment.',
       { status: 0 },
     );
   }

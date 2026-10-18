@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Camera, CheckSquare, MapPin, ChevronRight, ArrowRight, FileText, CheckCircle2, Clock } from 'lucide-react';
 
 import { listMyComplaints, fetchPublicComplaints, imageUrl } from '../api.js';
@@ -10,9 +10,10 @@ import { CampusMapModal, AIAnalysisModal } from '../components/CampusModals.jsx'
  * Main Home / Student Overview Dashboard matching Image 2.
  */
 export default function HomePage() {
-  const { token, email } = useAuth();
+  const { token, email, loading: authLoading } = useAuth();
   const [complaints, setComplaints] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [mapNotice, setMapNotice] = useState(false);
   const [aiModalOpen, setAiModalOpen] = useState(false);
 
@@ -27,33 +28,41 @@ export default function HomePage() {
     return clean.charAt(0).toUpperCase() + clean.slice(1);
   })();
 
-  useEffect(() => {
-    let active = true;
-    async function loadData() {
-      setLoading(true);
-      try {
-        if (token) {
-          const myRows = await listMyComplaints({ limit: 10 }, token);
-          if (active) {
-            setComplaints(Array.isArray(myRows) ? myRows : []);
-          }
-          return;
-        }
-        // Fallback to public rows only when not signed in
-        const publicRows = await fetchPublicComplaints({ limit: 5 });
-        if (active) {
-          setComplaints(Array.isArray(publicRows) ? publicRows : []);
-        }
-      } catch {
-        if (active) setComplaints([]);
-      } finally {
-        if (active) setLoading(false);
+  const loadData = useCallback(async () => {
+    if (authLoading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      if (token) {
+        const myRows = await listMyComplaints({ limit: 10, sort: 'newest' }, token);
+        setComplaints(Array.isArray(myRows) ? myRows : []);
+        return;
       }
+      // Fallback to public rows only when not signed in
+      const publicRows = await fetchPublicComplaints({ limit: 5 });
+      setComplaints(Array.isArray(publicRows) ? publicRows : []);
+    } catch (err) {
+      setError(err?.message || 'Error in backend service.');
+    } finally {
+      setLoading(false);
     }
+  }, [token, authLoading]);
 
+  useEffect(() => {
     loadData();
-    return () => { active = false; };
-  }, [token]);
+    const onFocus = () => { if (token) loadData(); };
+    const onHash = () => {
+      if (window.location.hash === '#/' || window.location.hash === '#/home' || !window.location.hash) {
+        if (token) loadData();
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('hashchange', onHash);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('hashchange', onHash);
+    };
+  }, [loadData, token]);
 
   // Display only real registered complaints for this user (never hardcoded mock items)
   const displayItems = complaints;
@@ -238,7 +247,28 @@ export default function HomePage() {
             </a>
           </div>
 
-          {displayItems.length === 0 ? (
+          {error && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-xs text-amber-800 animate-fade-in">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                type="button"
+                onClick={loadData}
+                className="px-2.5 py-1 bg-amber-200/60 hover:bg-amber-200 rounded-lg font-semibold text-amber-900 transition-colors shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {loading && displayItems.length === 0 ? (
+            <div className="py-12 text-center flex flex-col items-center justify-center">
+              <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-2" />
+              <p className="text-xs text-slate-400">Loading your complaints...</p>
+            </div>
+          ) : displayItems.length === 0 ? (
             <div className="py-10 text-center flex flex-col items-center justify-center">
               <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-2.5">
                 <CheckSquare className="w-6 h-6" />
@@ -261,7 +291,7 @@ export default function HomePage() {
                 return (
                   <a 
                     key={item.id} 
-                    href="#/mine" 
+                    href={`#/complaint/${encodeURIComponent(item.id)}`}
                     className="py-3.5 first:pt-0 last:pb-0 flex items-center justify-between gap-4 group hover:bg-slate-50/70 -mx-3 px-3 rounded-xl transition-colors"
                   >
                     <div className="flex items-center gap-3.5 min-w-0">
