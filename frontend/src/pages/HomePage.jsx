@@ -104,11 +104,11 @@ export default function HomePage() {
     <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto">
       {/* 1. HERO BANNER */}
       <div className="relative rounded-2xl overflow-hidden shadow-sm border border-slate-200 bg-slate-900 text-white min-h-[220px] sm:min-h-[260px] flex flex-col justify-between p-6 sm:p-8">
-        {/* Background photo of IIT Kanpur (Gemini generated authentic architectural representation) */}
+        {/* Background photo of IIT Kanpur (Authentic architectural representation of PK Kelkar Library and campus grounds) */}
         <div 
           className="absolute inset-0 bg-cover bg-center opacity-70"
           style={{
-            backgroundImage: `url('/iitk_gemini_campus.jpg')`
+            backgroundImage: `url('/iitk_authentic_campus.jpg')`
           }}
         />
         {/* Soft gradient veil for text contrast */}

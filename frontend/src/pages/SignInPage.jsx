@@ -140,7 +140,7 @@ export default function SignInPage() {
         <div 
           className="absolute inset-0 z-0 bg-cover bg-center bg-no-repeat pointer-events-none"
           style={{
-            backgroundImage: `url('/iitk_gemini_campus.jpg')`
+            backgroundImage: `url('/iitk_authentic_campus.jpg')`
           }}
         />
         {/* Subtle dark gradient overlay to ensure perfect typography legibility without muddying the image */}

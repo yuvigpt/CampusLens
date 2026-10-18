@@ -282,7 +282,7 @@ export default function DashboardPage({ view = 'overview', initialQuery = '' }) 
       <div className="relative rounded-2xl overflow-hidden bg-slate-900 text-white p-6 sm:p-7 shadow-sm border border-slate-200">
         <div
           className="absolute inset-0 bg-cover bg-center opacity-35"
-          style={{ backgroundImage: `url('/iitk_gemini_campus.jpg')` }}
+          style={{ backgroundImage: `url('/iitk_authentic_campus.jpg')` }}
         />
         <div className="absolute inset-0 bg-gradient-to-r from-slate-950/95 via-slate-900/80 to-indigo-950/60" />
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">
