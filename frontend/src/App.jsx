@@ -5,7 +5,7 @@ import {
   XCircle, Loader2, Info, MapPin, BarChart3, Settings, ShieldCheck, Users, Menu, X, Globe
 } from 'lucide-react';
 
-import { fetchHealth, onUnauthorized } from './api.js';
+import { fetchHealth, listMyComplaints, onUnauthorized } from './api.js';
 import { AuthProvider, useAuth } from './auth.jsx';
 import HomePage from './pages/HomePage.jsx';
 import SubmitPage from './pages/SubmitPage.jsx';
@@ -53,12 +53,88 @@ function Shell() {
   const [mapOpen, setMapOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [featureNotice, setFeatureNotice] = useState(null);
-  const [notifications, setNotifications] = useState([
-    { id: 1, title: 'Water leakage complaint updated', time: '2 hours ago', read: false },
-    { id: 2, title: 'Campus maintenance: Hall 12', time: 'Yesterday', read: false },
-  ]);
+  const [userComplaints, setUserComplaints] = useState([]);
+  const [readNotifIds, setReadNotifIds] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('cl_read_notifs') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  // When a visitor opens the app without an active session on root/home, default to signup
+  useEffect(() => {
+    if (!loading && !token && (hash === '' || hash === '#/' || hash === '#/home')) {
+      window.location.hash = '#/signup';
+    }
+  }, [loading, token, hash]);
+
+  // Load real personalized complaints for the logged-in user
+  useEffect(() => {
+    if (!token) {
+      setUserComplaints([]);
+      return;
+    }
+    let active = true;
+    listMyComplaints({ limit: 15 }, token)
+      .then((res) => {
+        if (active && Array.isArray(res)) {
+          setUserComplaints(res);
+        }
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [token, hash]);
+
+  function getRelativeTime(dateStr) {
+    if (!dateStr) return 'Recently';
+    const diffDays = Math.round((Date.now() - new Date(dateStr).getTime()) / (1000 * 3600 * 24));
+    if (diffDays <= 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    return `${diffDays}d ago`;
+  }
+
+  // Derive notifications solely from the user's registered complaints
+  const notifications = (() => {
+    if (!token || userComplaints.length === 0) return [];
+    return userComplaints.map((c) => {
+      const status = (c.status || 'reported').toLowerCase();
+      let title = `Report: ${c.description ? c.description.slice(0, 42) + (c.description.length > 42 ? '...' : '') : 'Campus Issue'}`;
+      let message = `Status: ${c.status || 'Reported'} at ${c.location || 'IIT Kanpur'}`;
+      if (status === 'resolved') {
+        title = `Resolved: ${c.description ? c.description.slice(0, 42) + (c.description.length > 42 ? '...' : '') : 'Issue'}`;
+        message = `Your complaint at ${c.location || 'IIT Kanpur'} has been resolved.`;
+      } else if (status.includes('progress')) {
+        title = `In Progress: ${c.description ? c.description.slice(0, 42) + (c.description.length > 42 ? '...' : '') : 'Issue'}`;
+        message = `Operations staff is addressing your report.`;
+      }
+      return {
+        id: `notif-${c.id}-${status}`,
+        complaintId: c.id,
+        title,
+        message,
+        time: getRelativeTime(c.updated_at || c.created_at),
+        read: readNotifIds.includes(`notif-${c.id}-${status}`),
+      };
+    });
+  })();
 
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  function markNotifRead(id) {
+    setReadNotifIds((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      try { localStorage.setItem('cl_read_notifs', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
+  function markAllNotifsRead() {
+    const allIds = notifications.map((n) => n.id);
+    setReadNotifIds(allIds);
+    try { localStorage.setItem('cl_read_notifs', JSON.stringify(allIds)); } catch {}
+  }
 
   useEffect(() => {
     const onHashChange = () => {
@@ -78,8 +154,10 @@ function Shell() {
     onUnauthorized(() => setExpired(true));
   }, []);
 
-  // Derive user's display name
+  // Derive user's display name from stored name, user metadata, or email prefix
   const userName = (() => {
+    const stored = localStorage.getItem('cl_user_name') || localStorage.getItem('cl_first_name');
+    if (stored && stored.trim()) return stored.trim();
     if (!email) return 'Student';
     const namePart = email.split('@')[0];
     const clean = namePart.replace(/[0-9_.-]/g, ' ').trim();
@@ -524,7 +602,7 @@ function Shell() {
                     {unreadCount > 0 ? (
                       <button
                         type="button"
-                        onClick={() => setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))}
+                        onClick={markAllNotifsRead}
                         className="text-[10px] text-blue-600 hover:text-blue-800 font-semibold cursor-pointer transition-colors"
                       >
                         Mark all read
@@ -533,32 +611,43 @@ function Shell() {
                       <span className="text-[10px] text-slate-400 font-medium">All caught up</span>
                     )}
                   </div>
-                  <div className="space-y-2">
-                    {notifications.map((notif) => (
-                      <div
-                        key={notif.id}
-                        onClick={() =>
-                          setNotifications((prev) =>
-                            prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n))
-                          )
-                        }
-                        className={`p-2.5 rounded-xl cursor-pointer transition-colors flex flex-col gap-0.5 ${
-                          notif.read
-                            ? 'bg-slate-50 hover:bg-slate-100/80 text-slate-500'
-                            : 'bg-blue-50/70 hover:bg-blue-100/60 text-slate-900 border border-blue-100/80'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <p className={`font-semibold text-xs leading-snug ${notif.read ? 'text-slate-600' : 'text-slate-900'}`}>
-                            {notif.title}
-                          </p>
-                          {!notif.read && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" title="Unread" />
-                          )}
-                        </div>
-                        <span className="text-[10px] text-slate-400">{notif.time}</span>
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="py-6 px-4 text-center flex flex-col items-center justify-center text-slate-400">
+                        <Bell className="w-5 h-5 mb-1.5 opacity-30 text-slate-500" />
+                        <p className="font-semibold text-slate-700 text-xs">No notifications yet</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          You will receive personalized updates here whenever your complaints are reviewed or resolved.
+                        </p>
                       </div>
-                    ))}
+                    ) : (
+                      notifications.map((notif) => (
+                        <a
+                          key={notif.id}
+                          href={`#/complaint/${encodeURIComponent(notif.complaintId)}`}
+                          onClick={() => {
+                            markNotifRead(notif.id);
+                            setNotifDropdownOpen(false);
+                          }}
+                          className={`p-2.5 rounded-xl cursor-pointer transition-colors flex flex-col gap-0.5 block ${
+                            notif.read
+                              ? 'bg-slate-50 hover:bg-slate-100/80 text-slate-500'
+                              : 'bg-blue-50/70 hover:bg-blue-100/60 text-slate-900 border border-blue-100/80'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`font-semibold text-xs leading-snug truncate ${notif.read ? 'text-slate-600' : 'text-slate-900'}`}>
+                              {notif.title}
+                            </p>
+                            {!notif.read && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" title="Unread" />
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-500 line-clamp-1">{notif.message}</p>
+                          <span className="text-[10px] text-slate-400 mt-0.5">{notif.time}</span>
+                        </a>
+                      ))
+                    )}
                   </div>
                 </div>
               )}

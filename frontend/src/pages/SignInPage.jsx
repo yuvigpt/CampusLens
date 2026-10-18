@@ -33,7 +33,7 @@ export function isAuthorizedAdminEmail(emailStr) {
 export default function SignInPage() {
   const { signIn, signUp, configured, loading } = useAuth();
 
-  const [mode, setMode] = useState(() => (window.location.hash === '#/signup' ? 'signup' : 'signin'));
+  const [mode, setMode] = useState(() => (window.location.hash === '#/signin' ? 'signin' : 'signup'));
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -88,11 +88,27 @@ export default function SignInPage() {
         if (result.error) {
           setError(result.error);
         } else {
+          // Store user name from user_metadata or backend profile
+          if (result.data?.session?.user) {
+            const metaName = result.data.session.user.user_metadata?.full_name || result.me?.full_name;
+            if (metaName) {
+              localStorage.setItem('cl_user_name', metaName.trim());
+              const parts = metaName.trim().split(/\s+/);
+              localStorage.setItem('cl_first_name', parts[0] || '');
+              localStorage.setItem('cl_last_name', parts.slice(1).join(' ') || '');
+            }
+          }
           // The backend-confirmed role decides the landing page: admins get
           // the operations dashboard, everyone else the student home.
           window.location.hash = result.me?.role === 'admin' ? '#/dashboard' : '#/';
         }
       } else {
+        if (fullName.trim()) {
+          localStorage.setItem('cl_user_name', fullName.trim());
+          const parts = fullName.trim().split(/\s+/);
+          localStorage.setItem('cl_first_name', parts[0] || '');
+          localStorage.setItem('cl_last_name', parts.slice(1).join(' ') || '');
+        }
         const result = await signUp(email, password, fullName);
         if (result.error) {
           setError(result.error);

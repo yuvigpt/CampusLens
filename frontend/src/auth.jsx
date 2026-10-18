@@ -91,6 +91,9 @@ export function AuthProvider({ children }) {
       password,
     });
     if (error) return { error: describe(error) };
+    if (data?.session) {
+      setSession(data.session);
+    }
     // Load the profile with the fresh token so the caller can route by the
     // backend-confirmed role: an administrator lands on the operations
     // dashboard instead of the student home page. A failure here is not a
@@ -112,6 +115,9 @@ export function AuthProvider({ children }) {
       },
     });
     if (error) return { error: describe(error) };
+    if (data?.session) {
+      setSession(data.session);
+    }
     // When the project has email confirmation disabled, signUp returns a
     // session immediately - load the profile so the caller can route by role
     // exactly like signIn does.

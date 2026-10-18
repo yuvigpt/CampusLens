@@ -16,8 +16,10 @@ export default function HomePage() {
   const [mapNotice, setMapNotice] = useState(false);
   const [aiModalOpen, setAiModalOpen] = useState(false);
 
-  // Derive user's display name from email (e.g., yuvrajg@iitk.ac.in -> Yuvraj)
+  // Derive user's display name from saved name, user metadata, or email
   const displayName = (() => {
+    const saved = localStorage.getItem('cl_first_name') || localStorage.getItem('cl_user_name');
+    if (saved && saved.trim()) return saved.trim();
     if (!email) return 'Student';
     const namePart = email.split('@')[0];
     const clean = namePart.replace(/[0-9_.-]/g, ' ').trim();
