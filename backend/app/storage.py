@@ -186,6 +186,13 @@ def create_signed_url(settings: config.Settings, *, object_path: str) -> str:
     if not signed_path:
         raise StorageError("Image storage unavailable.")
 
+    # Supabase Storage returns paths like "/object/sign/..." omitting the
+    # "/storage/v1" prefix. Ensure the canonical /storage/v1 prefix is present.
+    if not signed_path.startswith("/storage/v1"):
+        if not signed_path.startswith("/"):
+            signed_path = "/" + signed_path
+        signed_path = f"/storage/v1{signed_path}"
+
     return f"{settings.supabase_url.rstrip('/')}{signed_path}"
 
 

@@ -132,7 +132,7 @@ export default function CommunityPage() {
                 value={campusQuery}
                 onChange={(event) => setCampusQuery(event.target.value)}
                 placeholder="Filter by location or category..."
-                className="border border-slate-300 rounded-lg text-sm px-3 py-2 w-64 focus:ring-2 focus:ring-indigo-500"
+                className="border border-slate-300 rounded-lg text-base sm:text-sm px-3 py-2 w-full sm:w-64 focus:ring-2 focus:ring-indigo-500"
               />
             </label>
           </div>
@@ -160,7 +160,7 @@ export default function CommunityPage() {
           {campusLoading ? <SkeletonRows count={2} /> : null}
 
           {!campusLoading && campusMatches.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               {campusMatches.map((row) => (
                 <article
                   key={row.id}
@@ -209,7 +209,7 @@ export default function CommunityPage() {
                 value={feedQuery}
                 onChange={(event) => setFeedQuery(event.target.value)}
                 placeholder="Search published issues..."
-                className="border border-slate-300 rounded-lg text-sm px-3 py-2 w-64 focus:ring-2 focus:ring-indigo-500"
+                className="border border-slate-300 rounded-lg text-base sm:text-sm px-3 py-2 w-full sm:w-64 focus:ring-2 focus:ring-indigo-500"
               />
             </label>
           ) : null}

@@ -148,17 +148,17 @@ export default function SignInPage() {
 
         {/* Top: Logo Header */}
         <div className="relative z-10 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <CampusLensIcon className="w-10 h-10 ring-2 ring-indigo-400/40 shadow-lg shadow-indigo-500/30" />
+          <a href="#/" aria-label="CampusLens Home" className="flex items-center gap-3 group">
+            <CampusLensIcon className="w-10 h-10 ring-2 ring-indigo-400/40 shadow-lg shadow-indigo-500/30 group-hover:scale-105 transition-transform" />
             <div className="flex flex-col">
-              <span className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5">
+              <span className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5 group-hover:text-indigo-200 transition-colors">
                 CampusLens
               </span>
               <span className="text-xs text-indigo-300 font-medium tracking-wide">
                 Better Campus. Together
               </span>
             </div>
-          </div>
+          </a>
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/15 text-xs text-slate-200 shadow-sm">
             <img src="/iitk-logo.svg" alt="IITK Seal" className="w-5 h-5 object-contain" />
             <span className="font-semibold">IIT Kanpur</span>
@@ -202,19 +202,19 @@ export default function SignInPage() {
         <div className="w-full max-w-md flex flex-col">
           {/* Header Seal & Brand (Perfect Center Alignment) */}
           <div className="flex flex-col items-center justify-center text-center mb-6">
-            <div className="flex items-center justify-center gap-3 mb-2.5">
+            <a href="#/" aria-label="Return to CampusLens Home" className="flex items-center justify-center gap-3 mb-2.5 group">
               <img
                 src="/campuslens-icon.png"
                 alt="CampusLens Logo"
-                className="w-12 h-12 object-contain drop-shadow-sm"
+                className="w-12 h-12 object-contain drop-shadow-sm group-hover:scale-105 transition-transform"
               />
               <div className="h-7 w-px bg-slate-200" />
               <img
                 src="/iitk-logo.svg"
                 alt="IIT Kanpur Seal"
-                className="w-11 h-11 object-contain drop-shadow-sm"
+                className="w-11 h-11 object-contain drop-shadow-sm group-hover:scale-105 transition-transform"
               />
-            </div>
+            </a>
             <span className="text-xl font-black tracking-tight text-slate-900 leading-tight">CampusLens</span>
             <span className="text-xs font-semibold text-slate-500">Indian Institute of Technology Kanpur</span>
           </div>

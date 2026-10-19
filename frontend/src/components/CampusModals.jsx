@@ -19,8 +19,17 @@ export function CampusMapModal({ isOpen, onClose }) {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="map-modal-title"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Modal Header */}
         <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
           <div className="flex items-center gap-2.5">
@@ -28,13 +37,14 @@ export function CampusMapModal({ isOpen, onClose }) {
               <MapPin className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-slate-900">IIT Kanpur Campus Issue Map</h3>
+              <h3 id="map-modal-title" className="text-lg font-bold text-slate-900">IIT Kanpur Campus Issue Map</h3>
               <p className="text-xs text-slate-500">Live geographic distribution of reported complaints</p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close map"
             className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -133,14 +143,23 @@ export function AIAnalysisModal({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ai-modal-title"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-purple-50">
           <div className="flex items-center gap-3">
             <RobotAvatar className="w-10 h-10" />
             <div>
-              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-1.5">
+              <h3 id="ai-modal-title" className="text-lg font-bold text-slate-900 flex items-center gap-1.5">
                 CampusLens AI Vision Pipeline
                 <Sparkles className="w-4 h-4 text-purple-600" />
               </h3>
@@ -150,6 +169,7 @@ export function AIAnalysisModal({ isOpen, onClose }) {
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close AI preview"
             className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors"
           >
             <X className="w-5 h-5" />

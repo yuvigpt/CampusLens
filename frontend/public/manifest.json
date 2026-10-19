@@ -1,0 +1,22 @@
+{
+  "short_name": "CampusLens",
+  "name": "CampusLens · IIT Kanpur",
+  "description": "Smart campus issue reporting and operations triage system for Indian Institute of Technology Kanpur.",
+  "icons": [
+    {
+      "src": "/campuslens-icon.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/campuslens-icon.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/#/",
+  "background_color": "#090f1d",
+  "theme_color": "#4f46e5",
+  "display": "standalone",
+  "orientation": "portrait"
+}

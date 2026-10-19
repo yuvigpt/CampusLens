@@ -5,18 +5,77 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#4f46e5" />
+    
+    <title>CampusLens · Campus Operations | IIT Kanpur</title>
     <meta
       name="description"
-      content="CampusLens - report campus problems with a photo, and triage them from one operations dashboard."
+      content="CampusLens - Fast, transparent campus issue reporting with photo support and AI-assisted triage for Indian Institute of Technology Kanpur."
     />
+    <meta
+      name="keywords"
+      content="CampusLens, IIT Kanpur, campus maintenance, issue reporting, student portal, operations triage, campus facilities, IITK grievance"
+    />
+    <meta name="author" content="CampusLens Team · IIT Kanpur" />
+    <link rel="canonical" href="https://campus-lens-sable.vercel.app/" />
+
+    <!-- Favicon & PWA Icons -->
+    <link rel="icon" type="image/png" href="/campuslens-icon.png" />
+    <link rel="apple-touch-icon" href="/campuslens-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CampusLens" />
+    <meta property="og:url" content="https://campus-lens-sable.vercel.app/" />
+    <meta property="og:title" content="CampusLens · Campus Operations &amp; Student Reporting" />
+    <meta
+      property="og:description"
+      content="Report campus problems with photos, track status in real time, and triage maintenance efficiently across IIT Kanpur."
+    />
+    <meta property="og:image" content="https://campus-lens-sable.vercel.app/iitk_authentic_campus.jpg" />
+    <meta property="og:image:alt" content="IIT Kanpur Campus - PK Kelkar Library and Grounds" />
+
+    <!-- Twitter Cards -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CampusLens · Campus Operations &amp; Student Reporting" />
+    <meta
+      name="twitter:description"
+      content="Report campus problems with photos, track status in real time, and triage maintenance efficiently across IIT Kanpur."
+    />
+    <meta name="twitter:image" content="https://campus-lens-sable.vercel.app/iitk_authentic_campus.jpg" />
+
+    <!-- Typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="icon" type="image/png" href="/campuslens-icon.png" />
-    <link rel="apple-touch-icon" href="/campuslens-icon.png" />
-    <title>CampusLens · Campus Operations</title>
+
+    <!-- Structured Data (JSON-LD) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://campus-lens-sable.vercel.app/#website",
+            "url": "https://campus-lens-sable.vercel.app/",
+            "name": "CampusLens",
+            "description": "Smart campus issue reporting and operations triage system for IIT Kanpur.",
+            "inLanguage": "en"
+          },
+          {
+            "@type": "EducationalOrganization",
+            "@id": "https://www.iitk.ac.in/#organization",
+            "name": "Indian Institute of Technology Kanpur",
+            "alternateName": "IIT Kanpur",
+            "url": "https://www.iitk.ac.in/",
+            "logo": "https://campus-lens-sable.vercel.app/iitk-logo.svg"
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

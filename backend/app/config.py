@@ -73,6 +73,15 @@ class Settings:
     service_name: str = SERVICE_NAME
     service_version: str = SERVICE_VERSION
 
+    # Rate limiting & size limits
+    rate_limit_enabled: bool = True
+    rate_limit_submit_per_minute: int = 15
+    rate_limit_auth_per_minute: int = 60
+    rate_limit_public_per_minute: int = 60
+    rate_limit_general_per_minute: int = 120
+    max_request_body_bytes: int = 10 * 1024 * 1024
+    max_json_body_bytes: int = 1 * 1024 * 1024
+
     @property
     def allowed_mime_types(self) -> frozenset[str]:
         return scoring.ALLOWED_IMAGE_MIME
@@ -113,6 +122,21 @@ def settings_from_env(*, require: bool = True) -> Settings:
             _require(name)
         return placeholder
 
+    def _bool(name: str, default: bool) -> bool:
+        raw = (os.environ.get(name) or "").strip().lower()
+        if not raw:
+            return default
+        return raw not in {"0", "false", "no", "off"}
+
+    def _int(name: str, default: int) -> int:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
     cors_raw = (os.environ.get("CORS_ORIGINS") or "").strip()
     cors = (
         tuple(o.strip() for o in cors_raw.split(",") if o.strip())
@@ -133,6 +157,13 @@ def settings_from_env(*, require: bool = True) -> Settings:
         max_upload_bytes=scoring.MAX_UPLOAD_BYTES,
         ai_enabled=ai_raw not in {"0", "false", "no", "off"},
         cors_origins=cors,
+        rate_limit_enabled=_bool("RATE_LIMIT_ENABLED", True),
+        rate_limit_submit_per_minute=_int("RATE_LIMIT_SUBMIT_PER_MINUTE", 15),
+        rate_limit_auth_per_minute=_int("RATE_LIMIT_AUTH_PER_MINUTE", 60),
+        rate_limit_public_per_minute=_int("RATE_LIMIT_PUBLIC_PER_MINUTE", 60),
+        rate_limit_general_per_minute=_int("RATE_LIMIT_GENERAL_PER_MINUTE", 120),
+        max_request_body_bytes=_int("MAX_REQUEST_BODY_BYTES", 10 * 1024 * 1024),
+        max_json_body_bytes=_int("MAX_JSON_BODY_BYTES", 1 * 1024 * 1024),
     )
 
 

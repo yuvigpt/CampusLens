@@ -1,0 +1,17 @@
+# Robots.txt for CampusLens (IIT Kanpur)
+User-agent: *
+Allow: /
+Allow: /#/community
+Allow: /#/signin
+Allow: /#/signup
+
+# Protect authenticated and private student/staff/admin areas from search indexing
+Disallow: /#/dashboard
+Disallow: /#/triage
+Disallow: /#/profile
+Disallow: /#/mine
+Disallow: /#/complaint/
+Disallow: /api/
+
+# Sitemap location
+Sitemap: https://campus-lens-sable.vercel.app/sitemap.xml

@@ -59,7 +59,12 @@ export function apiUrl(path) {
  */
 export function imageUrl(value) {
   if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
+  if (/^https?:\/\//i.test(value)) {
+    if (value.includes('.supabase.co/object/')) {
+      return value.replace(/(\.supabase\.co)\/object\/(sign|public|authenticated)\//i, '$1/storage/v1/object/$2/');
+    }
+    return value;
+  }
   return apiUrl(value);
 }
 

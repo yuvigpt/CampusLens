@@ -15,6 +15,9 @@ import ProfilePage from './pages/ProfilePage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import SignInPage from './pages/SignInPage.jsx';
 import CommunityPage from './pages/CommunityPage.jsx';
+import NotFoundPage from './pages/NotFoundPage.jsx';
+import Footer from './components/Footer.jsx';
+import { updatePageMetadata } from './lib/seo.js';
 import { CampusLensIcon } from './components/BrandIcons.jsx';
 import { CampusMapModal } from './components/CampusModals.jsx';
 
@@ -138,7 +141,9 @@ function Shell() {
 
   useEffect(() => {
     const onHashChange = () => {
-      setHash(window.location.hash || '#/');
+      const current = window.location.hash || '#/';
+      setHash(current);
+      updatePageMetadata(current.split('?')[0]);
       setMobileMenuOpen(false);
       try {
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -146,8 +151,27 @@ function Shell() {
         // Ignored in environments where scrollTo is unsupported
       }
     };
+
+    // Initial page metadata sync
+    updatePageMetadata((window.location.hash || '#/').split('?')[0]);
+
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Keyboard accessibility: dismiss popovers and dialogs on Escape key
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setFeatureNotice(null);
+        setMobileMenuOpen(false);
+        setNotifDropdownOpen(false);
+        setProfileDropdownOpen(false);
+        setMapOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   useEffect(() => {
@@ -250,7 +274,7 @@ function Shell() {
       case '#/community':
         return <CommunityPage />;
       default:
-        return <HomePage />;
+        return <NotFoundPage requestedPath={currentPath} />;
     }
   }
 
@@ -267,7 +291,7 @@ function Shell() {
         {/* IIT Kanpur Campus authentic background photo overlay */}
         <div 
           className="absolute inset-0 z-0 bg-cover bg-bottom opacity-20 pointer-events-none mix-blend-luminosity scale-105"
-          style={{ backgroundImage: `url('/iitk_gemini_campus.jpg')` }}
+          style={{ backgroundImage: `url('/iitk_authentic_campus.jpg')` }}
         />
         {/* Deep dark gradient overlay */}
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#090f1d]/95 via-[#0b1428]/80 to-[#070c18]/95 pointer-events-none" />
@@ -400,7 +424,7 @@ function Shell() {
             {/* IIT Kanpur Campus authentic background photo overlay */}
             <div 
               className="absolute inset-0 z-0 bg-cover bg-bottom opacity-20 pointer-events-none mix-blend-luminosity scale-105"
-              style={{ backgroundImage: `url('/iitk_gemini_campus.jpg')` }}
+              style={{ backgroundImage: `url('/iitk_authentic_campus.jpg')` }}
             />
             <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#090f1d]/95 via-[#0b1428]/80 to-[#070c18]/95 pointer-events-none" />
 
@@ -532,15 +556,21 @@ function Shell() {
       <div className="flex-1 flex flex-col min-w-0 min-h-screen">
         {/* TOP BAR */}
         <header className="sticky top-0 z-40 h-16 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 sm:gap-4">
-          {/* Mobile menu trigger */}
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(true)}
-            className="md:hidden p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors shrink-0"
-            title="Open menu"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
+          {/* Mobile menu trigger & Mobile clickable logo */}
+          <div className="flex items-center gap-1.5 md:hidden shrink-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="p-2 -ml-1 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+              aria-label="Open mobile menu"
+              aria-expanded={mobileMenuOpen}
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <a href="#/" aria-label="CampusLens Home" className="flex items-center gap-1 p-1 rounded-xl hover:bg-slate-100 transition-colors">
+              <CampusLensIcon className="w-7 h-7" />
+            </a>
+          </div>
 
           {/* Search bar - Enter hands the query to the page that can really
               search: admins go to the Issue Triage workspace, students to
@@ -563,7 +593,8 @@ function Shell() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={isDashboard ? "Search ticket ID, location..." : "Search complaints..."}
-                className="w-full pl-3.5 sm:pl-4 pr-9 sm:pr-10 py-1.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-full text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow"
+                aria-label={isDashboard ? "Search ticket ID or location" : "Search complaints"}
+                className="w-full pl-3.5 sm:pl-4 pr-9 sm:pr-10 py-1.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-full text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow"
               />
               <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
                 <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -739,12 +770,13 @@ function Shell() {
           )}
 
           {renderPage()}
+          <Footer onOpenMap={() => setMapOpen(true)} />
         </main>
 
         {/* ============================================================ */}
         {/* 4. FIXED MOBILE BOTTOM TAB BAR                               */}
         {/* ============================================================ */}
-        <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-40 py-2 px-3 flex items-center justify-around shadow-lg">
+        <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-40 py-2 px-3 flex items-center justify-around shadow-lg" aria-label="Mobile navigation">
           {studentNavItems.map((item) => {
             const active = (currentPath === item.hash) || (item.hash === '#/' && currentPath === '#/home');
             return (
@@ -774,6 +806,9 @@ function Shell() {
       {featureNotice && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feature-modal-title"
           onClick={() => setFeatureNotice(null)}
         >
           <div
@@ -786,7 +821,7 @@ function Shell() {
             <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-700 border border-blue-200 mb-2">
               Coming Soon
             </div>
-            <h3 className="text-base font-bold text-slate-900 mb-1.5">{featureNotice.title}</h3>
+            <h3 id="feature-modal-title" className="text-base font-bold text-slate-900 mb-1.5">{featureNotice.title}</h3>
             <p className="text-xs text-slate-600 leading-relaxed mb-6">{featureNotice.message}</p>
             <button
               type="button"

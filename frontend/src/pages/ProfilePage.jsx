@@ -64,6 +64,16 @@ export default function ProfilePage() {
     }
   }, [token]);
 
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setShowDeleteModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   function handleSave(e) {
     e.preventDefault();
     localStorage.setItem('cl_first_name', firstName);
@@ -464,8 +474,17 @@ export default function ProfilePage() {
 
       {/* DELETE ACCOUNT CONFIRMATION MODAL */}
       {showDeleteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4 animate-scale-in">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-account-title"
+          onClick={() => setShowDeleteModal(false)}
+        >
+          <div 
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4 animate-scale-in"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-start justify-between">
               <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-5 h-5" />
@@ -473,6 +492,7 @@ export default function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setShowDeleteModal(false)}
+                aria-label="Close dialog"
                 className="p-1 rounded-lg text-slate-400 hover:text-slate-700"
               >
                 <X className="w-5 h-5" />
@@ -480,7 +500,7 @@ export default function ProfilePage() {
             </div>
 
             <div>
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight">Delete Account?</h3>
+              <h3 id="delete-account-title" className="text-lg font-bold text-slate-900 tracking-tight">Delete Account?</h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                 This action will wipe your local profile preferences, disconnect your current session, and sign you out of CampusLens. Are you sure you want to proceed?
               </p>

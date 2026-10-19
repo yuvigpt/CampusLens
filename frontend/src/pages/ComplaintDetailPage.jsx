@@ -243,11 +243,21 @@ export default function ComplaintDetailPage({ complaintId }) {
       <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <figure className="h-64 bg-slate-50 border-b border-slate-100 overflow-hidden relative m-0">
           {complaint.image_url ? (
-            <img
-              src={imageUrl(complaint.image_url)}
-              alt="Photo you uploaded with this report"
-              className="w-full h-full object-cover"
-            />
+            <a
+              href={imageUrl(complaint.image_url)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block w-full h-full relative group cursor-zoom-in"
+              title="View full-resolution photo in a new tab"
+            >
+              <img
+                src={imageUrl(complaint.image_url)}
+                alt="Photo you uploaded with this report"
+                loading="lazy"
+                decoding="async"
+                className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+              />
+            </a>
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400">
               <ImageIcon className="w-10 h-10 opacity-40" />
@@ -256,7 +266,7 @@ export default function ComplaintDetailPage({ complaintId }) {
           )}
         </figure>
         <div className="p-5">
-          <p className="text-sm text-slate-700 leading-relaxed m-0 whitespace-pre-wrap">
+          <p className="text-sm text-slate-700 leading-relaxed m-0 whitespace-pre-wrap break-words">
             {complaint.description}
           </p>
         </div>

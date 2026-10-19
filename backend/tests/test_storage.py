@@ -120,3 +120,42 @@ def test_the_owner_receives_a_signed_url(client):
     )
     assert got.status_code == 200
     assert got.json()["image_url"].startswith("https://fake.supabase.co/signed/")
+
+
+def test_create_signed_url_ensures_storage_v1_prefix(monkeypatch):
+    from app import config, storage
+
+    test_settings = config.Settings(
+        database_url="postgresql://fake",
+        supabase_url="https://testproj.supabase.co",
+        supabase_anon_key="fake-anon",
+        supabase_service_role_key="test-key",
+        bucket="CLimage",
+    )
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self):
+            return {"signedURL": "/object/sign/CLimage/user/pic.jpg?token=abc"}
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json=None, headers=None):
+            return DummyResponse()
+
+    monkeypatch.setattr(storage.httpx, "Client", DummyClient)
+    signed = storage.create_signed_url(test_settings, object_path="user/pic.jpg")
+    assert (
+        signed
+        == "https://testproj.supabase.co/storage/v1/object/sign/CLimage/user/pic.jpg?token=abc"
+    )
+

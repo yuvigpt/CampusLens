@@ -84,4 +84,32 @@ describe('api.js - endpoint wiring', () => {
     await fetchPublicComplaints({ limit: 10 });
     expect(global.fetch.mock.calls[1][0]).toContain('/api/public/complaints?limit=10');
   });
+
+  describe('imageUrl() helper', () => {
+    it('returns null for nullish or empty value', async () => {
+      const { imageUrl } = await loadApi();
+      expect(imageUrl(null)).toBeNull();
+      expect(imageUrl('')).toBeNull();
+      expect(imageUrl(undefined)).toBeNull();
+    });
+
+    it('resolves relative paths against API_BASE', async () => {
+      const { imageUrl } = await loadApi();
+      expect(imageUrl('/photos/pic.jpg')).toBe(`${BASE}/photos/pic.jpg`);
+    });
+
+    it('normalizes Supabase signed URLs missing /storage/v1', async () => {
+      const { imageUrl } = await loadApi();
+      const broken = 'https://abcdefgh.supabase.co/object/sign/CLimage/uid/pic.jpg?token=123';
+      const fixed = imageUrl(broken);
+      expect(fixed).toBe('https://abcdefgh.supabase.co/storage/v1/object/sign/CLimage/uid/pic.jpg?token=123');
+    });
+
+    it('leaves already canonical Supabase URLs intact', async () => {
+      const { imageUrl } = await loadApi();
+      const canonical = 'https://abcdefgh.supabase.co/storage/v1/object/sign/CLimage/uid/pic.jpg?token=123';
+      expect(imageUrl(canonical)).toBe(canonical);
+    });
+  });
 });
+

@@ -98,6 +98,9 @@ def verify_token(token: str, settings: config.Settings) -> str:
     """
     import jwt
 
+    if not isinstance(token, str) or len(token) > 8192:
+        raise _unauthorized("Invalid token.")
+
     try:
         header = jwt.get_unverified_header(token)
     except Exception:

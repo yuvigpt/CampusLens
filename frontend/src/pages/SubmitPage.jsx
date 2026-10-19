@@ -266,7 +266,7 @@ export default function SubmitPage() {
                 setProblems(p => ({ ...p, description: undefined }));
               }}
               placeholder="Describe the problem in detail (e.g., broken fan, water leakage, wifi issue)"
-              className={`w-full p-3.5 bg-white border rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow resize-y ${
+              className={`w-full p-3.5 bg-white border rounded-xl text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow resize-y ${
                 problems.description ? 'border-rose-400 focus:ring-rose-400' : 'border-slate-300'
               }`}
             />
@@ -292,7 +292,7 @@ export default function SubmitPage() {
                   setProblems(p => ({ ...p, location: undefined }));
                 }}
                 placeholder="e.g. Block C, Lab 3, 2nd floor"
-                className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow ${
+                className={`w-full pl-10 pr-10 py-2.5 bg-white border rounded-xl text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow ${
                   problems.location ? 'border-rose-400 focus:ring-rose-400' : 'border-slate-300'
                 }`}
               />
@@ -318,7 +318,7 @@ export default function SubmitPage() {
                 id="recurrence"
                 value={recurrence}
                 onChange={(e) => setRecurrence(e.target.value)}
-                className="w-full appearance-none px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow pr-10 cursor-pointer"
+                className="w-full appearance-none px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow pr-10 cursor-pointer"
               >
                 <option value="Continuous (Everyday/Every hour)">Continuous (Everyday/Every hour)</option>
                 <option value="Intermittent (Few times a day)">Intermittent (Few times a day)</option>

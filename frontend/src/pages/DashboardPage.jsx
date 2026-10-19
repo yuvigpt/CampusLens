@@ -13,6 +13,7 @@ import {
   deleteMyComplaint,
   fetchSummary,
   getAdminComplaint,
+  imageUrl,
   listAllComplaints,
   listComplaintEvents,
   listInvestigationNotes,
@@ -904,12 +905,20 @@ function DetailDrawer({ complaint, token, onClose, onRefresh, onDeleted }) {
           {/* Report */}
           <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             {complaint.image_url ? (
-              <img
-                src={complaint.image_url}
-                alt={`Photo uploaded with complaint ${complaint.id}`}
-                className="w-full h-56 object-cover bg-slate-100"
-                loading="lazy"
-              />
+              <a
+                href={imageUrl(complaint.image_url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block relative group overflow-hidden bg-slate-100"
+                title="View full-resolution photo in a new tab"
+              >
+                <img
+                  src={imageUrl(complaint.image_url)}
+                  alt={`Photo uploaded with complaint ${complaint.id}`}
+                  className="w-full h-56 object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                  loading="lazy"
+                />
+              </a>
             ) : null}
             <div className="p-5 flex flex-col gap-3">
               <p className="text-sm text-slate-800 leading-relaxed m-0 whitespace-pre-wrap">

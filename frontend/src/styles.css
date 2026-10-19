@@ -220,3 +220,16 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Accessible focus visible outlines for keyboard navigation (WCAG 2.1 AA) */
+:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+/* Guard against mobile horizontal overflow */
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}

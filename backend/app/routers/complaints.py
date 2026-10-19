@@ -22,6 +22,7 @@ Authorisation notes
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import (
@@ -70,6 +71,14 @@ def _settings(request: Request) -> config.Settings:
 
 def _sid(value: object) -> str:
     return str(value)
+
+
+def _validate_complaint_id(complaint_id: str) -> None:
+    """Ensure malformed IDs return 404 rather than triggering database errors."""
+    try:
+        uuid.UUID(str(complaint_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Complaint not found.")
 
 
 def _initial_band(row: dict) -> Optional[str]:
@@ -525,6 +534,7 @@ async def get_own_complaint(
     identity: database.Identity = Depends(current_identity),
 ) -> StudentComplaintOut:
     """404 for another student's complaint - never 403, so existence is hidden."""
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         with database.session(settings.database_url, identity) as conn:
@@ -560,6 +570,7 @@ async def delete_own_complaint(
     foreign keys. The stored photo is removed best-effort AFTER the commit; a
     storage failure never resurrects the row.
     """
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     image_path: Optional[str] = None
     try:
@@ -681,6 +692,7 @@ async def get_admin_complaint(
     complaint_id: str,
     identity: database.Identity = Depends(current_admin),
 ) -> AdminComplaintOut:
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         with database.session(settings.database_url, identity) as conn:
@@ -705,6 +717,7 @@ async def update_status(
     identity: database.Identity = Depends(current_admin),
 ) -> AdminComplaintOut:
     """Students can never move a status; only an admin can."""
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     updated: Optional[dict] = None
     try:
@@ -748,6 +761,7 @@ async def confirm_and_score(
     The admin sends the confirmed levels explicitly (D11). An AI suggestion may
     have pre-filled the form, but nothing is scored until a human sends this.
     """
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         urgency, impact, safety = body.normalised()
@@ -805,6 +819,7 @@ async def _require_complaint(
     settings: config.Settings, identity: database.Identity, complaint_id: str
 ) -> None:
     """404 when the complaint does not exist (RLS-hidden rows count as absent)."""
+    _validate_complaint_id(complaint_id)
     try:
         with database.session(settings.database_url, identity) as conn:
             row = database.get_complaint(conn, complaint_id)
@@ -983,6 +998,7 @@ async def approve_public(
 
     Re-approving updates the existing entry rather than duplicating it.
     """
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         with database.session(settings.database_url, identity) as conn:
@@ -1032,6 +1048,7 @@ async def revoke_public(
     The entry is kept but approved_at is cleared, so it becomes a draft and the
     public policy hides it again. Nothing is deleted from the audit trail.
     """
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         with database.session(settings.database_url, identity) as conn:
@@ -1064,6 +1081,7 @@ async def public_approval_state(
     identity: database.Identity = Depends(current_admin),
 ) -> Optional[PublicComplaintOut]:
     """Publication state for one complaint; null when it is not published."""
+    _validate_complaint_id(complaint_id)
     settings = _settings(request)
     try:
         with database.session(settings.database_url, identity) as conn:

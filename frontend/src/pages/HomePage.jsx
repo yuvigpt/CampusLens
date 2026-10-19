@@ -56,11 +56,19 @@ export default function HomePage() {
         if (token) loadData();
       }
     };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setMapNotice(false);
+        setAiModalOpen(false);
+      }
+    };
     window.addEventListener('focus', onFocus);
     window.addEventListener('hashchange', onHash);
+    window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('hashchange', onHash);
+      window.removeEventListener('keydown', onKeyDown);
     };
   }, [loadData, token]);
 
@@ -361,6 +369,9 @@ export default function HomePage() {
       {mapNotice && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="home-map-notice-title"
           onClick={() => setMapNotice(false)}
         >
           <div
@@ -373,7 +384,7 @@ export default function HomePage() {
             <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-700 border border-blue-200 mb-2">
               Coming Soon
             </div>
-            <h3 className="text-base font-bold text-slate-900 mb-1.5">Campus Map</h3>
+            <h3 id="home-map-notice-title" className="text-base font-bold text-slate-900 mb-1.5">Campus Map</h3>
             <p className="text-xs text-slate-600 leading-relaxed mb-6">
               The interactive Campus Map feature is currently under active development and will be available in the upcoming release. Stay tuned!
             </p>

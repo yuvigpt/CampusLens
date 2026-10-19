@@ -254,8 +254,8 @@ export default function ComplaintCard({ complaint, onStatusChange, busy, token, 
         <aside className="w-full md:w-64 flex flex-col gap-5 shrink-0">
           <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex items-center justify-center">
             {src ? (
-              <a href={src} target="_blank" rel="noreferrer" className="block w-full h-full relative group">
-                <img src={src} alt={`Photo uploaded with complaint ${id}`} loading="lazy" className="w-full h-48 object-cover group-hover:scale-105 transition-transform duration-300" />
+              <a href={src} target="_blank" rel="noopener noreferrer" className="block w-full h-full relative group">
+                <img src={src} alt={`Photo uploaded with complaint ${id}`} loading="lazy" decoding="async" className="w-full h-48 object-cover group-hover:scale-105 transition-transform duration-300" />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
               </a>
             ) : hasPhotoPath ? (
