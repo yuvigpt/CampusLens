@@ -1,0 +1,51 @@
+# Render blueprint for the CampusLens FastAPI backend.
+#
+# Secrets are NEVER stored here. Every variable marked sync:false must be set in
+# the Render dashboard (Dashboard -> your service -> Environment).
+#
+# The service-role key is server-only: it must never reach Vercel or the browser.
+
+services:
+  - type: web
+    name: campuslens-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Render injects PORT; uvicorn must bind 0.0.0.0 to be reachable.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+
+      # --- Supabase: dashboard -> Project Settings -> API ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false          # SECRET. Server-only. Never expose to the browser.
+
+      # --- Database ---
+      # Use the pooler connection string for a free (idle) web service.
+      - key: DATABASE_URL
+        sync: false          # SECRET: contains the database password.
+
+      # --- Private Storage bucket ---
+      - key: SUPABASE_BUCKET
+        value: CLimage
+
+      # --- CORS: the deployed frontend origin only. Never "*". ---
+      - key: CORS_ORIGINS
+        sync: false          # set to https://<your-vercel-domain>
+
+      # --- AI (optional) ---
+      - key: AI_ENABLED
+        value: "false"       # complaints submit fine with AI off
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
